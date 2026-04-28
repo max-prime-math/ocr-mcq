@@ -57,7 +57,17 @@ cp config.example.json config.json
 
 ---
 
-## Basic usage
+## Web interface
+
+```bash
+streamlit run app.py
+```
+
+Opens at `http://localhost:8501`. Upload PDFs, watch them process, review any flagged pages, and download the `.tex` file — all in the browser. The API key can be entered in the sidebar.
+
+---
+
+## Command-line usage
 
 1. Drop your PDFs into `input_pdfs/`.
 
