@@ -5,6 +5,8 @@ Each PDF page should contain one question with answer choices A–E and a visual
 
 Uses Claude Vision (Anthropic API) to extract the question, choices, and marked answer in a single API call per page.
 
+Accessible here: <https://ocr-mcq.streamlit.app/>
+
 ---
 
 ## Setup
