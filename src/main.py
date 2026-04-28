@@ -1,5 +1,5 @@
 """
-main.py — Entry point for the AP Calculus PDF → LaTeX converter.
+main.py — Entry point for the OCR-MCQ PDF → LaTeX converter.
 
 Typical usage:
     python src/main.py --input input_pdfs --output output_tex --combine
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Convert AP Calculus multiple-choice PDFs to exam-class LaTeX.",
+        description="OCR-MCQ: convert multiple-choice PDFs to exam-class LaTeX.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--input", default="input_pdfs", help="Directory containing input PDFs.")

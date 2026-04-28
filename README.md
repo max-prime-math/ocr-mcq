@@ -1,6 +1,6 @@
-# AP Calculus PDF → LaTeX Converter
+# OCR-MCQ
 
-Converts a folder of AP Calculus multiple-choice PDFs into exam-class LaTeX.
+Converts a folder of multiple-choice PDFs into exam-class LaTeX.
 Each PDF page should contain one question with answer choices A–E and a visually marked correct answer.
 
 ---
@@ -8,8 +8,8 @@ Each PDF page should contain one question with answer choices A–E and a visual
 ## Setup
 
 ```bash
-git clone https://github.com/yourname/ocr-aps.git
-cd ocr-aps
+git clone https://github.com/yourname/ocr-mcq.git
+cd ocr-mcq
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
