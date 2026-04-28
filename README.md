@@ -19,13 +19,26 @@ pip install -r requirements.txt
 
 ### Anthropic API key
 
-Sign up at <https://console.anthropic.com>, create an API key, and export it:
+Sign up at <https://console.anthropic.com>, create an API key, and set it as an environment variable.
+
+**This is separate from your claude.ai subscription** — it's a pay-as-you-go API account billed by token usage.
+
+#### Setting the key safely
+
+The safest approach is to export it directly in your terminal session. It lives only in memory and is never written to disk, so there is nothing for git to commit:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-This is separate from your claude.ai subscription — it's a pay-as-you-go API account.
+You will need to re-export it each time you open a new terminal. Alternatively, store it in a `.env` file which is already excluded by `.gitignore`:
+
+```bash
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
+source .env
+```
+
+> **Never put your API key in `config.json` or any other file that could be committed.** The `.gitignore` excludes `.env` and `config.json`, but the safest habit is to keep keys out of files entirely. Before every `git push`, run `git status` and `git diff --cached` to confirm nothing sensitive is staged.
 
 ### Cost estimate
 
