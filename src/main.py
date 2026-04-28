@@ -174,7 +174,7 @@ def process_page(
     finally:
         Path(tmp).unlink(missing_ok=True)
 
-    parsed = ParsedQuestion(question=data["question"], choices=data.get("choices", {}))
+    parsed = ParsedQuestion(question=data["question"], choices=data.get("choices", {}), solution=data.get("solution"))
     answer = data.get("correct_answer")  # letter or None
     confidence = 1.0 if answer else 0.0
     flagged = answer is None

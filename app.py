@@ -170,6 +170,7 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                 parsed = ParsedQuestion(
                     question=data.get("question", ""),
                     choices=data.get("choices", {}),
+                    solution=data.get("solution"),
                 )
                 answer = data.get("correct_answer")
 

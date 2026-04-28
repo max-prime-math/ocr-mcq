@@ -37,6 +37,7 @@ _SIMPLE_CHOICE = re.compile(
 class ParsedQuestion(TypedDict):
     question: str
     choices: dict[str, str]
+    solution: str | None
 
 
 def _find_choice_spans(text: str) -> list[tuple[int, str]]:
@@ -101,7 +102,7 @@ def parse_question(ocr_text: str) -> ParsedQuestion:
     if missing:
         logger.warning("Missing choice(s): %s", missing)
 
-    return ParsedQuestion(question=question, choices=choices)
+    return ParsedQuestion(question=question, choices=choices, solution=None)
 
 
 def _label_end(text: str, label_start: int) -> int:

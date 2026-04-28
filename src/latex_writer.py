@@ -70,6 +70,13 @@ def render_question(
         lines.append(r"% TODO: correct answer not detected")
 
     lines.append(r"\end{choices}")
+
+    solution = parsed.get("solution")
+    if solution:
+        lines.append(r"\begin{solution}")
+        lines.append(solution)
+        lines.append(r"\end{solution}")
+
     return "\n".join(lines)
 
 

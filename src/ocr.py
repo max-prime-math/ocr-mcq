@@ -31,12 +31,16 @@ _SYSTEM_PROMPT = """\
 You are processing scanned multiple-choice exam pages. Each page contains
 exactly one question with answer choices labelled A through E. One choice
 has a visible mark — a filled bubble, circled letter, checkmark, tick, or
-similar — indicating the correct answer.
+similar — indicating the correct answer. Some pages also include a written
+solution or explanation below the answer choices.
 
 Your job:
 1. Extract the full question stem (preserve all LaTeX math exactly).
 2. Extract the text of each answer choice A–E (preserve LaTeX math).
 3. Identify which choice is marked as correct.
+4. If there is a written solution or explanation on the page (equations,
+   working, or explanatory text beyond the answer choices), extract it as
+   the solution. If there is no solution text, set solution to null.
 
 LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
 
@@ -71,8 +75,15 @@ _OUTPUT_SCHEMA = {
                 {"type": "null"},
             ],
         },
+        "solution": {
+            "description": "Written solution or explanation if present on the page, or null.",
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ],
+        },
     },
-    "required": ["question", "choices", "correct_answer"],
+    "required": ["question", "choices", "correct_answer", "solution"],
     "additionalProperties": False,
 }
 
