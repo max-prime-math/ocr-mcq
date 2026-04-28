@@ -39,3 +39,6 @@ review/
 
 # Output (generated; do not track)
 output_tex/
+
+# Input PDFs (local files; do not track)
+input_pdfs/
