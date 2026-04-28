@@ -1,94 +1,107 @@
 """
-ocr.py — Mathpix OCR integration.
+ocr.py — Claude Vision extraction for multiple-choice exam pages.
 
-Sends a cropped page image to the Mathpix API and returns the raw JSON
-response.  Caching is handled by MathpixCache; this module is only
-responsible for the HTTP call itself.
+Sends a full-page image to Claude and returns the question stem, answer
+choices A–E, and the marked correct answer in a single API call.
 
-Environment variables required:
-    MATHPIX_APP_ID  — your Mathpix application ID
-    MATHPIX_APP_KEY — your Mathpix application key
+Requires ANTHROPIC_API_KEY to be set in the environment.
+
+Prompt caching is applied to the system prompt so repeated calls within
+the cache TTL only pay for the image + question tokens, not the system
+prompt tokens.
 """
 
 import base64
+import json
 import logging
-import os
+from pathlib import Path
+from typing import Optional
 
-import requests
+import anthropic
 
-from cache import MathpixCache
+from cache import MathpixCache as VisionCache
 
 logger = logging.getLogger(__name__)
 
-MATHPIX_API_URL = "https://api.mathpix.com/v3/text"
+# ---------------------------------------------------------------------------
+# Prompt & schema
+# ---------------------------------------------------------------------------
 
-# Request options sent to Mathpix.  math_inline_delimiters wraps inline math
-# in \( … \) so downstream LaTeX is immediately usable.
-_DEFAULT_OPTIONS = {
-    "math_inline_delimiters": ["\\(", "\\)"],
-    "math_display_delimiters": ["\\[", "\\]"],
-    "rm_spaces": True,
+_SYSTEM_PROMPT = """\
+You are processing scanned multiple-choice exam pages. Each page contains
+exactly one question with answer choices labelled A through E. One choice
+has a visible mark — a filled bubble, circled letter, checkmark, tick, or
+similar — indicating the correct answer.
+
+Your job:
+1. Extract the full question stem (preserve all LaTeX math exactly).
+2. Extract the text of each answer choice A–E (preserve LaTeX math).
+3. Identify which choice is marked as correct.
+
+LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
+
+If the correct-answer mark is absent, ambiguous, or not legible, set
+correct_answer to null — never guess silently.\
+"""
+
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "question": {
+            "type": "string",
+            "description": "Full question stem with LaTeX math preserved.",
+        },
+        "choices": {
+            "type": "object",
+            "description": "Answer choices A through E.",
+            "properties": {
+                "A": {"type": "string"},
+                "B": {"type": "string"},
+                "C": {"type": "string"},
+                "D": {"type": "string"},
+                "E": {"type": "string"},
+            },
+            "required": ["A", "B", "C", "D", "E"],
+            "additionalProperties": False,
+        },
+        "correct_answer": {
+            "description": "Letter of the marked choice, or null if unclear.",
+            "anyOf": [
+                {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+                {"type": "null"},
+            ],
+        },
+    },
+    "required": ["question", "choices", "correct_answer"],
+    "additionalProperties": False,
 }
 
 
-def _read_credentials() -> tuple[str, str]:
-    app_id = os.environ.get("MATHPIX_APP_ID", "")
-    app_key = os.environ.get("MATHPIX_APP_KEY", "")
-    if not app_id or not app_key:
-        raise EnvironmentError(
-            "MATHPIX_APP_ID and MATHPIX_APP_KEY must be set as environment variables."
-        )
-    return app_id, app_key
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-
-def _encode_image(image_path: str) -> str:
-    with open(image_path, "rb") as fh:
-        return base64.b64encode(fh.read()).decode("ascii")
-
-
-def call_mathpix(image_path: str) -> dict:
-    """
-    Send *image_path* to the Mathpix API and return the raw response dict.
-
-    Raises:
-        EnvironmentError: if credentials are missing.
-        requests.HTTPError: if the API returns a non-2xx status.
-    """
-    app_id, app_key = _read_credentials()
-    b64 = _encode_image(image_path)
-
-    payload = {
-        "src": f"data:image/png;base64,{b64}",
-        "formats": ["text", "latex_styled"],
-        "data_options": _DEFAULT_OPTIONS,
-    }
-    headers = {
-        "app_id": app_id,
-        "app_key": app_key,
-        "Content-type": "application/json",
-    }
-
-    logger.debug("Sending request to Mathpix for %s", image_path)
-    resp = requests.post(MATHPIX_API_URL, json=payload, headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_ocr_text(
+def extract_page(
     image_path: str,
-    cache: MathpixCache | None = None,
+    client: anthropic.Anthropic,
+    cache: Optional[VisionCache] = None,
     force: bool = False,
+    model: str = "claude-haiku-4-5",
 ) -> dict:
     """
-    Return Mathpix response for *image_path*, using cache when available.
+    Extract question data from a full-page exam image.
+
+    Returns a dict with keys:
+        question       (str)
+        choices        (dict[str, str])  — keys A–E
+        correct_answer (str | None)      — letter, or None if unclear
 
     Args:
-        image_path: Path to the PNG crop to OCR.
-        cache:      MathpixCache instance; pass None to skip caching.
-        force:      Bypass cache and re-call the API even if cached.
-
-    Returns:
-        Raw Mathpix JSON dict (keys include "text", "latex_styled", etc.).
+        image_path: Path to a PNG of the full page.
+        client:     Anthropic client instance.
+        cache:      Optional VisionCache; skipped when None.
+        force:      Bypass cache and call the API even if cached.
+        model:      Claude model ID to use.
     """
     if cache is not None:
         if force:
@@ -96,11 +109,72 @@ def get_ocr_text(
         else:
             cached = cache.get(image_path)
             if cached is not None:
+                logger.debug("Cache hit for %s", image_path)
                 return cached
 
-    result = call_mathpix(image_path)
+    with open(image_path, "rb") as fh:
+        image_b64 = base64.standard_b64encode(fh.read()).decode("ascii")
+
+    logger.debug("Calling Claude Vision (%s) for %s", model, image_path)
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=1024,
+        system=[
+            {
+                "type": "text",
+                "text": _SYSTEM_PROMPT,
+                # Cache the system prompt — same for every page.
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract the question, all five answer choices (A–E), "
+                            "and the marked correct answer from this exam page."
+                        ),
+                    },
+                ],
+            }
+        ],
+        output_config={
+            "format": {
+                "type": "json_schema",
+                "schema": _OUTPUT_SCHEMA,
+            }
+        },
+    )
+
+    raw = next(b.text for b in response.content if b.type == "text")
+    result = json.loads(raw)
+
+    _log_usage(response)
 
     if cache is not None:
         cache.put(image_path, result)
 
     return result
+
+
+def _log_usage(response: anthropic.types.Message) -> None:
+    u = response.usage
+    logger.debug(
+        "Tokens — input: %d  output: %d  cache_read: %d  cache_create: %d",
+        u.input_tokens,
+        u.output_tokens,
+        getattr(u, "cache_read_input_tokens", 0),
+        getattr(u, "cache_creation_input_tokens", 0),
+    )

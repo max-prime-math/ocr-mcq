@@ -1,16 +1,15 @@
 {
   "_comment": "Copy this file to config.json and adjust values as needed.",
 
+  "model": "claude-haiku-4-5",
+
   "dpi": 300,
 
-  "top_crop": 0.5,
   "bottom_crop_start": 0.5,
 
   "min_confidence": 0.6,
 
-  "use_vision_fallback": false,
-
-  "cache_dir": "cache/mathpix",
+  "cache_dir": "cache/vision",
   "review_csv": "review/review.csv",
   "corrections_json": "review/corrections.json"
 }

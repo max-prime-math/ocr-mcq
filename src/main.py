@@ -1,6 +1,9 @@
 """
 main.py — Entry point for the OCR-MCQ PDF → LaTeX converter.
 
+Uses Claude Vision to extract question stems, answer choices, and the
+marked correct answer from each PDF page in a single API call.
+
 Typical usage:
     python src/main.py --input input_pdfs --output output_tex --combine
     python src/main.py --input input_pdfs --review
@@ -12,17 +15,16 @@ import os
 import sys
 from pathlib import Path
 
-# Make src/ importable when running as `python src/main.py`.
+import anthropic
+
 sys.path.insert(0, str(Path(__file__).parent))
 
-from cache import MathpixCache
-from detection import detect_answer
+from cache import MathpixCache as VisionCache
 from latex_writer import append_to_combined, finalise_combined, write_tex_file
-from ocr import get_ocr_text
-from parsing import parse_question
+from ocr import extract_page
+from parsing import ParsedQuestion
 from utils import (
     crop_bottom,
-    crop_top,
     get_correction,
     load_config,
     load_corrections,
@@ -34,6 +36,8 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -48,13 +52,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input", default="input_pdfs", help="Directory containing input PDFs.")
     p.add_argument("--output", default="output_tex", help="Directory for generated .tex files.")
     p.add_argument("--combine", action="store_true", help="Merge all questions into one output.tex.")
-    p.add_argument("--cache", default="cache/mathpix", help="Mathpix cache directory.")
+    p.add_argument("--cache", default="cache/vision", help="Vision cache directory.")
     p.add_argument("--review", action="store_true", help="Interactive review mode.")
-    p.add_argument("--force-ocr", action="store_true", help="Re-call Mathpix even if cached.")
+    p.add_argument("--force-ocr", action="store_true", help="Re-call Claude even if a cached result exists.")
     p.add_argument("--debug", action="store_true", help="Enable verbose debug logging.")
-    p.add_argument("--top-crop", type=float, default=None, help="Top crop fraction (0–1).")
-    p.add_argument("--bottom-crop-start", type=float, default=None, help="Bottom crop start fraction (0–1).")
-    p.add_argument("--min-confidence", type=float, default=None, help="Minimum detection confidence (0–1).")
+    p.add_argument("--bottom-crop-start", type=float, default=None, help="Where the answer area starts for review display (0–1).")
+    p.add_argument("--min-confidence", type=float, default=None, help="Minimum confidence to auto-accept an answer (0–1).")
+    p.add_argument("--model", default=None, help=f"Claude model ID (default: {DEFAULT_MODEL}).")
     p.add_argument("--config", default="config.json", help="Path to JSON config file.")
     p.add_argument("--review-csv", default="review/review.csv", help="Path to review CSV.")
     p.add_argument("--corrections", default="review/corrections.json", help="Path to corrections JSON.")
@@ -66,10 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def run_review_mode(args, cfg: dict) -> None:
-    """
-    Interactive loop: display each flagged page's bottom crop, prompt for
-    the correct answer, and save to corrections.json.
-    """
+    """Show each flagged page, prompt for the correct letter, save corrections."""
     import csv
 
     csv_path = args.review_csv
@@ -78,13 +79,13 @@ def run_review_mode(args, cfg: dict) -> None:
         return
 
     corrections = load_corrections(args.corrections)
+    min_conf = float(cfg.get("min_confidence", 0.6))
+    bottom_start = float(cfg.get("bottom_crop_start", 0.5))
 
     with open(csv_path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
 
-    flagged = [r for r in rows if not r["detected_answer"] or float(r["confidence"]) < float(
-        cfg.get("min_confidence", 0.6)
-    )]
+    flagged = [r for r in rows if not r["detected_answer"] or float(r["confidence"]) < min_conf]
 
     if not flagged:
         print("No pages flagged for review.")
@@ -101,13 +102,11 @@ def run_review_mode(args, cfg: dict) -> None:
             print(f"  [{fname} p{page}] already corrected → {corrections[key]}, skipping.")
             continue
 
-        # Try to display the bottom crop image.
         pdf_path = str(Path(args.input) / fname)
         if Path(pdf_path).exists():
             try:
                 img = render_page_to_image(pdf_path, page)
-                bottom_crop_start = float(cfg.get("bottom_crop_start", 0.5))
-                bottom = crop_bottom(img, bottom_crop_start)
+                bottom = crop_bottom(img, bottom_start)
                 tmp = save_temp_image(bottom)
                 _show_image(tmp)
                 Path(tmp).unlink(missing_ok=True)
@@ -136,9 +135,7 @@ def run_review_mode(args, cfg: dict) -> None:
 
 
 def _show_image(path: str) -> None:
-    """Open *path* with the system image viewer (best-effort)."""
-    import subprocess, platform
-
+    import platform, subprocess
     system = platform.system()
     try:
         if system == "Darwin":
@@ -159,49 +156,32 @@ def process_page(
     pdf_path: str,
     page_index: int,
     cfg: dict,
-    cache: MathpixCache,
+    cache: VisionCache,
+    client: anthropic.Anthropic,
     force_ocr: bool,
 ) -> dict:
     """
-    Process a single PDF page and return a result dict with keys:
-        parsed, answer, confidence, flagged, error
+    Render one PDF page and extract question + answer via Claude Vision.
+
+    Returns a dict with keys: parsed, answer, confidence, flagged, error.
     """
-    top_fraction = cfg.get("top_crop", 0.5)
-    bottom_start = cfg.get("bottom_crop_start", 0.5)
-    min_conf = cfg.get("min_confidence", 0.6)
+    model = cfg.get("model", DEFAULT_MODEL)
 
-    # Render page.
     img = render_page_to_image(pdf_path, page_index, dpi=cfg.get("dpi", 300))
-
-    # OCR on top crop.
-    top_img = crop_top(img, top_fraction)
-    top_tmp = save_temp_image(top_img)
+    tmp = save_temp_image(img)
     try:
-        ocr_result = get_ocr_text(top_tmp, cache=cache, force=force_ocr)
+        data = extract_page(tmp, client=client, cache=cache, force=force_ocr, model=model)
     finally:
-        Path(top_tmp).unlink(missing_ok=True)
+        Path(tmp).unlink(missing_ok=True)
 
-    # Prefer latex_styled for math fidelity; fall back to plain text.
-    raw_text = ocr_result.get("latex_styled") or ocr_result.get("text", "")
-    parsed = parse_question(raw_text)
-
-    # Answer detection on bottom crop.
-    bottom_img = crop_bottom(img, bottom_start)
-    bottom_tmp = save_temp_image(bottom_img)
-    try:
-        letter, confidence = detect_answer(
-            bottom_tmp,
-            min_confidence=min_conf,
-            use_vision_fallback=cfg.get("use_vision_fallback", False),
-        )
-    finally:
-        Path(bottom_tmp).unlink(missing_ok=True)
-
-    flagged = letter is None or confidence < min_conf
+    parsed = ParsedQuestion(question=data["question"], choices=data.get("choices", {}))
+    answer = data.get("correct_answer")  # letter or None
+    confidence = 1.0 if answer else 0.0
+    flagged = answer is None
 
     return {
         "parsed": parsed,
-        "answer": letter,
+        "answer": answer,
         "confidence": confidence,
         "flagged": flagged,
         "error": None,
@@ -221,19 +201,20 @@ def main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    # Merge config file with CLI overrides (CLI wins).
     cfg = load_config(args.config)
-    if args.top_crop is not None:
-        cfg["top_crop"] = args.top_crop
     if args.bottom_crop_start is not None:
         cfg["bottom_crop_start"] = args.bottom_crop_start
     if args.min_confidence is not None:
         cfg["min_confidence"] = args.min_confidence
+    if args.model is not None:
+        cfg["model"] = args.model
 
-    # --review mode is a separate interactive workflow.
     if args.review:
         run_review_mode(args, cfg)
         return
+
+    # Initialise Anthropic client (reads ANTHROPIC_API_KEY from env).
+    client = anthropic.Anthropic()
 
     input_dir = Path(args.input)
     output_dir = Path(args.output)
@@ -244,11 +225,10 @@ def main() -> None:
         logger.error("No PDF files found in %s", input_dir)
         sys.exit(1)
 
-    cache = MathpixCache(args.cache)
+    cache = VisionCache(args.cache)
     corrections = load_corrections(args.corrections)
     combined_path = str(output_dir / "output.tex")
 
-    # Summary counters.
     total_pages = 0
     successful = 0
     flagged_count = 0
@@ -265,7 +245,7 @@ def main() -> None:
             error_count += 1
             continue
 
-        page_results: list[tuple] = []
+        page_results = []
 
         for page_idx in range(n_pages):
             total_pages += 1
@@ -273,7 +253,7 @@ def main() -> None:
 
             try:
                 result = process_page(
-                    str(pdf_path), page_idx, cfg, cache, args.force_ocr
+                    str(pdf_path), page_idx, cfg, cache, client, args.force_ocr
                 )
             except Exception as exc:
                 logger.error("  Error on page %d of %s: %s", page_idx, fname, exc)
@@ -298,14 +278,13 @@ def main() -> None:
                     page_idx,
                     result["answer"],
                     result["confidence"],
-                    notes="low confidence" if result["answer"] else "not detected",
+                    notes="answer not detected",
                 )
             else:
                 successful += 1
 
             page_results.append((result["parsed"], result["answer"]))
 
-        # Write output.
         if args.combine:
             append_to_combined(page_results, combined_path, fname)
         else:
@@ -315,7 +294,6 @@ def main() -> None:
     if args.combine and pdf_files:
         finalise_combined(combined_path)
 
-    # Summary.
     print("\n" + "=" * 50)
     print(f"  Total pages processed : {total_pages}")
     print(f"  Successful            : {successful}")

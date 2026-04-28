@@ -3,6 +3,8 @@
 Converts a folder of multiple-choice PDFs into exam-class LaTeX.
 Each PDF page should contain one question with answer choices A–E and a visually marked correct answer.
 
+Uses Claude Vision (Anthropic API) to extract the question, choices, and marked answer in a single API call per page.
+
 ---
 
 ## Setup
@@ -15,12 +17,24 @@ source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Get a free Mathpix account at <https://mathpix.com> and export your credentials:
+### Anthropic API key
+
+Sign up at <https://console.anthropic.com>, create an API key, and export it:
 
 ```bash
-export MATHPIX_APP_ID="your_app_id"
-export MATHPIX_APP_KEY="your_app_key"
+export ANTHROPIC_API_KEY="sk-ant-..."
 ```
+
+This is separate from your claude.ai subscription — it's a pay-as-you-go API account.
+
+### Cost estimate
+
+The default model is `claude-haiku-4-5`, which costs roughly **$0.003 per page** (image tokens + output). The system prompt is cached after the first call, so repeated runs within 5 minutes cost even less.
+
+| Model | Cost / page | Best for |
+|-------|-------------|----------|
+| `claude-haiku-4-5` | ~$0.003 | Bulk processing (default) |
+| `claude-sonnet-4-6` | ~$0.013 | Higher accuracy if needed |
 
 Copy the example config:
 
@@ -94,10 +108,10 @@ If the correct answer could not be determined, a placeholder is inserted:
 | Flag | What it does |
 |------|-------------|
 | `--combine` | Merge all questions into one `output.tex` |
-| `--force-ocr` | Re-call Mathpix even if a cached result exists |
-| `--top-crop 0.6` | Use top 60% of each page for OCR (default 0.5) |
-| `--bottom-crop-start 0.6` | Answer area starts at 60% down (default 0.5) |
-| `--min-confidence 0.7` | Raise the confidence bar for answer detection |
+| `--force-ocr` | Re-call Claude even if a cached result exists |
+| `--model claude-sonnet-4-6` | Use a more capable model |
+| `--bottom-crop-start 0.6` | Answer area starts at 60% down (for review display) |
+| `--min-confidence 0.7` | Raise the confidence bar for auto-accepting answers |
 | `--debug` | Verbose logging |
 
 ---
