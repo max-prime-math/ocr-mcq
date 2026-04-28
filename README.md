@@ -1,0 +1,109 @@
+# AP Calculus PDF → LaTeX Converter
+
+Converts a folder of AP Calculus multiple-choice PDFs into exam-class LaTeX.
+Each PDF page should contain one question with answer choices A–E and a visually marked correct answer.
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/yourname/ocr-aps.git
+cd ocr-aps
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Get a free Mathpix account at <https://mathpix.com> and export your credentials:
+
+```bash
+export MATHPIX_APP_ID="your_app_id"
+export MATHPIX_APP_KEY="your_app_key"
+```
+
+Copy the example config:
+
+```bash
+cp config.example.json config.json
+```
+
+---
+
+## Basic usage
+
+1. Drop your PDFs into `input_pdfs/`.
+
+2. Run the converter:
+
+```bash
+python src/main.py --input input_pdfs --output output_tex --combine
+```
+
+This creates `output_tex/output.tex` with all questions merged into one file.
+To get one `.tex` file per PDF, omit `--combine`.
+
+3. Check the summary printed at the end:
+
+```
+==================================================
+  Total pages processed : 40
+  Successful            : 37
+  Flagged for review    : 3
+  Errors                : 0
+==================================================
+```
+
+4. If pages were flagged, run the interactive review:
+
+```bash
+python src/main.py --input input_pdfs --review
+```
+
+This shows each flagged page's answer area, tells you what was detected, and lets you type the correct letter.
+Corrections are saved to `review/corrections.json`.
+
+5. Re-run step 2 to regenerate the LaTeX with corrections applied.
+
+---
+
+## Output format
+
+```latex
+\question
+Find the derivative of \(f(x) = x^2 + 3x\).
+\begin{choices}
+\CorrectChoice \(2x + 3\)
+\choice \(x^2 + 3\)
+\choice \(2x\)
+\choice \(x + 3\)
+\choice \(2x^2 + 3\)
+\end{choices}
+```
+
+If the correct answer could not be determined, a placeholder is inserted:
+
+```latex
+% TODO: correct answer not detected
+```
+
+---
+
+## Common options
+
+| Flag | What it does |
+|------|-------------|
+| `--combine` | Merge all questions into one `output.tex` |
+| `--force-ocr` | Re-call Mathpix even if a cached result exists |
+| `--top-crop 0.6` | Use top 60% of each page for OCR (default 0.5) |
+| `--bottom-crop-start 0.6` | Answer area starts at 60% down (default 0.5) |
+| `--min-confidence 0.7` | Raise the confidence bar for answer detection |
+| `--debug` | Verbose logging |
+
+---
+
+## Running tests
+
+```bash
+pytest tests/ -v
+```
