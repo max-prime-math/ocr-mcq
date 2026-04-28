@@ -283,7 +283,7 @@ def main() -> None:
             else:
                 successful += 1
 
-            source = f"{fname} — page {page_idx + 1}"
+            source = Path(fname).stem
             page_results.append((result["parsed"], result["answer"], source))
 
         if args.combine:

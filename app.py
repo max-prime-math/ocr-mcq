@@ -323,7 +323,7 @@ def build_tex(results: list, corrections: dict) -> str:
             continue
         key = f"{r['fname']}:{r['page']}"
         answer = corrections.get(key, r["answer"])
-        source = f"{r['fname']} — page {r['page'] + 1}"
+        source = Path(r["fname"]).stem
         blocks.append(render_question(r["parsed"], answer, source))
 
     return preamble + "\n\n".join(blocks) + postamble
