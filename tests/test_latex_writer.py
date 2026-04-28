@@ -36,7 +36,7 @@ def test_all_five_choices_present():
 
 def test_write_tex_file_creates_valid_latex(tmp_path):
     out = str(tmp_path / "test.tex")
-    questions = [(_make_parsed("Q1?"), "A"), (_make_parsed("Q2?"), None)]
+    questions = [(_make_parsed("Q1?"), "A", "test.pdf — page 1"), (_make_parsed("Q2?"), None, "test.pdf — page 2")]
     write_tex_file(questions, out)
     content = Path(out).read_text()
     assert r"\documentclass" in content

@@ -283,7 +283,8 @@ def main() -> None:
             else:
                 successful += 1
 
-            page_results.append((result["parsed"], result["answer"]))
+            source = f"{fname} — page {page_idx + 1}"
+            page_results.append((result["parsed"], result["answer"], source))
 
         if args.combine:
             append_to_combined(page_results, combined_path, fname)

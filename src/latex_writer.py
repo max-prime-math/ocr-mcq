@@ -37,6 +37,7 @@ def _escape_percent(text: str) -> str:
 def render_question(
     parsed: ParsedQuestion,
     correct_answer: Optional[str],
+    source: Optional[str] = None,
 ) -> str:
     """
     Render one question as a LaTeX ``\\question`` block.
@@ -44,12 +45,16 @@ def render_question(
     Args:
         parsed:         Output of ``parse_question``.
         correct_answer: Letter A–E, or None if unknown.
+        source:         Optional label (e.g. filename + page) added as a
+                        comment directly under the \\question line.
 
     Returns:
         Multi-line LaTeX string (no trailing newline).
     """
     lines: list[str] = []
     lines.append(r"\question")
+    if source:
+        lines.append(f"% {source}")
     lines.append(parsed["question"])
     lines.append(r"\begin{choices}")
 
@@ -92,7 +97,7 @@ def write_tex_file(
         output_path: Destination file path (created/overwritten).
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    blocks = [render_question(pq, ans) for pq, ans in questions]
+    blocks = [render_question(pq, ans, src) for pq, ans, src in questions]
     content = _PREAMBLE + "\n\n".join(blocks) + _POSTAMBLE
 
     with open(output_path, "w", encoding="utf-8") as fh:
@@ -126,8 +131,8 @@ def append_to_combined(
         if mode == "w":
             fh.write(_PREAMBLE)
         fh.write(f"\n% --- {source_label} ---\n\n")
-        for pq, ans in questions:
-            fh.write(render_question(pq, ans))
+        for pq, ans, src in questions:
+            fh.write(render_question(pq, ans, src))
             fh.write("\n\n")
 
 
