@@ -35,9 +35,36 @@ for key, default in {
     "results": [],
     "processed": False,
     "tmpdir": None,
+    "usage_log": [],
+    "model_used": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
+
+# Pricing per million tokens (input, output, cache_read, cache_write).
+_PRICING = {
+    "claude-haiku-4-5":  {"input": 1.00, "output": 5.00,  "cache_read": 0.10, "cache_write": 1.25},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    "claude-opus-4-7":   {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
+}
+
+def compute_cost(usage_log: list, model: str) -> dict:
+    """Sum token counts and compute USD cost across all API calls in usage_log."""
+    p = _PRICING.get(model, _PRICING["claude-haiku-4-5"])
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for u in usage_log:
+        totals["input"]       += u.get("input_tokens", 0)
+        totals["output"]      += u.get("output_tokens", 0)
+        totals["cache_read"]  += u.get("cache_read_input_tokens", 0)
+        totals["cache_write"] += u.get("cache_creation_input_tokens", 0)
+
+    cost = (
+        totals["input"]       * p["input"]       / 1_000_000
+        + totals["output"]    * p["output"]       / 1_000_000
+        + totals["cache_read"]  * p["cache_read"]  / 1_000_000
+        + totals["cache_write"] * p["cache_write"] / 1_000_000
+    )
+    return {**totals, "cost_usd": cost}
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -114,6 +141,7 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
         st.stop()
 
     all_results = []
+    usage_log = []
     pages_done = 0
     progress = st.progress(0, text="Starting…")
     status = st.empty()
@@ -135,6 +163,7 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                         cache=cache,
                         force=force_ocr,
                         model=model,
+                        usage_out=usage_log,
                     )
                 finally:
                     Path(tmp_img).unlink(missing_ok=True)
@@ -179,6 +208,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
     progress.empty()
     status.empty()
     st.session_state.results = all_results
+    st.session_state.usage_log = usage_log
+    st.session_state.model_used = model
     st.session_state.processed = True
     st.rerun()
 
@@ -200,6 +231,29 @@ col1, col2, col3 = st.columns(3)
 col1.metric("✅ Successful", len(successful))
 col2.metric("⚠️ Flagged for review", len(flagged))
 col3.metric("❌ Errors", len(errors))
+
+# Token usage & cost summary
+if st.session_state.usage_log:
+    usage = compute_cost(st.session_state.usage_log, st.session_state.model_used or "claude-haiku-4-5")
+    api_calls = len(st.session_state.usage_log)
+    cache_hits = len(results) - api_calls
+
+    with st.expander(f"💰 Cost — ${usage['cost_usd']:.4f} for this run", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("API calls", api_calls, help="Cache hits made no API call and cost nothing.")
+        c2.metric("Cache hits", cache_hits)
+        c3.metric("Total tokens", f"{usage['input'] + usage['output'] + usage['cache_read'] + usage['cache_write']:,}")
+        c4.metric("Total cost", f"${usage['cost_usd']:.4f}")
+
+        st.caption(
+            f"Model: `{st.session_state.model_used}` — "
+            f"Input: {usage['input']:,} tokens — "
+            f"Output: {usage['output']:,} tokens — "
+            f"Cache read: {usage['cache_read']:,} tokens — "
+            f"Cache write: {usage['cache_write']:,} tokens"
+        )
+elif st.session_state.processed:
+    st.info("All pages were served from cache — no API calls made, no cost incurred.")
 
 if errors:
     with st.expander("Error details"):

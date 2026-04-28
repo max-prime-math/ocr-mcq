@@ -87,6 +87,7 @@ def extract_page(
     cache: Optional[VisionCache] = None,
     force: bool = False,
     model: str = "claude-haiku-4-5",
+    usage_out: Optional[list] = None,
 ) -> dict:
     """
     Extract question data from a full-page exam image.
@@ -102,6 +103,8 @@ def extract_page(
         cache:      Optional VisionCache; skipped when None.
         force:      Bypass cache and call the API even if cached.
         model:      Claude model ID to use.
+        usage_out:  Optional list; a usage dict is appended for each live
+                    API call (cache hits are not counted — no tokens used).
     """
     if cache is not None:
         if force:
@@ -161,20 +164,25 @@ def extract_page(
     raw = next(b.text for b in response.content if b.type == "text")
     result = json.loads(raw)
 
-    _log_usage(response)
+    u = response.usage
+    usage = {
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0),
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0),
+    }
+    logger.debug(
+        "Tokens — input: %d  output: %d  cache_read: %d  cache_create: %d",
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["cache_read_input_tokens"],
+        usage["cache_creation_input_tokens"],
+    )
+
+    if usage_out is not None:
+        usage_out.append(usage)
 
     if cache is not None:
         cache.put(image_path, result)
 
     return result
-
-
-def _log_usage(response: anthropic.types.Message) -> None:
-    u = response.usage
-    logger.debug(
-        "Tokens — input: %d  output: %d  cache_read: %d  cache_create: %d",
-        u.input_tokens,
-        u.output_tokens,
-        getattr(u, "cache_read_input_tokens", 0),
-        getattr(u, "cache_creation_input_tokens", 0),
-    )
