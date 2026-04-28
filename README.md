@@ -57,7 +57,25 @@ cp config.example.json config.json
 
 ---
 
-## Basic usage
+## Web interface
+
+The easiest way to use OCR-MCQ is in the browser:
+
+```bash
+streamlit run app.py
+```
+
+This opens at `http://localhost:8501`. From there you can:
+- Drag and drop PDFs
+- Watch pages process with a live progress bar
+- Enter correct answers for any flagged pages directly in the browser
+- Download the finished `output.tex`
+
+The API key can be entered in the sidebar — it is never saved to disk.
+
+---
+
+## Command-line usage
 
 1. Drop your PDFs into `input_pdfs/`.
 
