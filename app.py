@@ -8,6 +8,7 @@ Run with:
 import os
 import sys
 import tempfile
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -64,6 +65,7 @@ for key, default in {
     "figures_dir": None,
     "usage_log": [],
     "model_used": None,
+    "processing_error": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -93,6 +95,48 @@ def compute_cost(usage_log: list, model: str) -> dict:
         + totals["cache_write"] * p["cache_write"]  / 1_000_000
     )
     return {**totals, "cost_usd": cost}
+
+
+def build_tex(results: list, corrections: dict) -> str:
+    preamble = (
+        "\\documentclass[12pt,addpoints]{exam}\n"
+        "\\usepackage{amsmath,amssymb,amsfonts}\n"
+        "\\usepackage{graphicx}\n\n"
+        "\\begin{document}\n"
+        "\\begin{questions}\n"
+    )
+    postamble = "\n\\end{questions}\n\\end{document}\n"
+
+    blocks = []
+    for r in results:
+        if r["error"] or r["parsed"] is None:
+            continue
+        key = f"{r['fname']}:{r['page']}"
+        answer = corrections.get(key, r["answer"])
+        source = f"{Path(r['fname']).stem} p{r['page'] + 1}"
+        if r.get("page_end", r["page"]) > r["page"]:
+            source += f"-{r['page_end'] + 1}"
+        blocks.append(render_question(r["parsed"], answer, source))
+
+    return preamble + "\n\n".join(blocks) + postamble
+
+
+def _progress_value(done: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, done / total))
+
+
+def _checkpoint_processing(tmpdir: str, results: list, usage_log: list, model_used: str, figures_dir: str | None) -> None:
+    payload = {
+        "results": results,
+        "usage_log": usage_log,
+        "model_used": model_used,
+        "figures_dir": figures_dir,
+    }
+    Path(tmpdir).mkdir(parents=True, exist_ok=True)
+    with open(Path(tmpdir) / "checkpoint.json", "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
 
 
 # ---------------------------------------------------------------------------
@@ -181,147 +225,164 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
     status = st.empty()
     figures_dir = os.path.join(tmpdir, "figures")
     st.session_state.figures_dir = figures_dir
+    st.session_state.processing_error = None
 
-    for pdf_path in pdf_paths:
-        fname = Path(pdf_path).name
-        n = page_count(pdf_path)
-        page_idx = 0
+    processing_error = None
+    try:
+        for pdf_path in pdf_paths:
+            fname = Path(pdf_path).name
+            n = page_count(pdf_path)
+            page_idx = 0
 
-        while page_idx < n:
-            status.text(f"{fname} — page {page_idx + 1} of {n}")
+            while page_idx < n:
+                status.text(f"{fname} — page {page_idx + 1} of {n}")
 
-            try:
-                primary_dpi = 170
-                fallback_dpi = 240
-                page_images = [render_page_to_image(pdf_path, page_idx, dpi=primary_dpi)]
-
-                tmp_img = save_temp_image(page_images[0])
                 try:
-                    data = extract_page(
-                        tmp_img,
-                        client=client,
-                        cache=cache,
-                        force=force_ocr,
-                        model=model,
-                        usage_out=usage_log,
-                        include_figures=False,
+                    primary_dpi = 170
+                    fallback_dpi = 240
+                    page_images = [render_page_to_image(pdf_path, page_idx, dpi=primary_dpi)]
+
+                    tmp_img = save_temp_image(page_images[0])
+                    try:
+                        data = extract_page(
+                            tmp_img,
+                            client=client,
+                            cache=cache,
+                            force=force_ocr,
+                            model=model,
+                            usage_out=usage_log,
+                            include_figures=False,
+                        )
+                    finally:
+                        Path(tmp_img).unlink(missing_ok=True)
+
+                    mode = (figure_mode or "Auto").lower()
+                    wants_figures = mode == "on" or (mode == "auto" and should_extract_figures(data))
+
+                    used_next_page = page_idx + 1 < n and should_retry_with_next_page(data)
+                    if used_next_page:
+                        page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
+                        page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=fallback_dpi))
+                        tmp_img = save_temp_image(page_images[0])
+                        tmp_img_2 = save_temp_image(page_images[1])
+                        try:
+                            data = extract_page(
+                                tmp_img,
+                                client=client,
+                                cache=cache,
+                                force=force_ocr,
+                                model=model,
+                                usage_out=usage_log,
+                                second_image_path=tmp_img_2,
+                                include_figures=wants_figures,
+                            )
+                        finally:
+                            Path(tmp_img).unlink(missing_ok=True)
+                            Path(tmp_img_2).unlink(missing_ok=True)
+                    elif wants_figures:
+                        page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
+                        tmp_img = save_temp_image(page_images[0])
+                        try:
+                            data = extract_page(
+                                tmp_img,
+                                client=client,
+                                cache=cache,
+                                force=force_ocr,
+                                model=model,
+                                usage_out=usage_log,
+                                include_figures=True,
+                            )
+                        finally:
+                            Path(tmp_img).unlink(missing_ok=True)
+
+                    pages_used = int(data.get("pages_used") or 1)
+                    if used_next_page and (data.get("correct_answer") is not None or data.get("solution")):
+                        pages_used = max(pages_used, 2)
+                    figures = materialise_figures(
+                        data.get("figures", []),
+                        page_images[:pages_used],
+                        figures_dir,
+                        f"{Path(fname).stem}_p{page_idx + 1}",
                     )
-                finally:
-                    Path(tmp_img).unlink(missing_ok=True)
+                    question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
+                    solution_figures = []
+                    question_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section", "question") == "question"]
+                    solution_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section") == "solution"]
+                    notes = _result_notes(data, pages_used, figures, used_next_page)
 
-                mode = (figure_mode or "Auto").lower()
-                wants_figures = mode == "on" or (mode == "auto" and should_extract_figures(data))
+                    parsed = ParsedQuestion(
+                        question=data.get("question", ""),
+                        choices=data.get("choices", {}),
+                        solution=data.get("solution"),
+                        figures=question_figures,
+                        solution_figures=solution_figures,
+                        tables=question_tables,
+                        solution_tables=solution_tables,
+                    )
+                    answer = data.get("correct_answer")
 
-                used_next_page = page_idx + 1 < n and should_retry_with_next_page(data)
-                if used_next_page:
-                    page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
-                    page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=fallback_dpi))
-                    tmp_img = save_temp_image(page_images[0])
-                    tmp_img_2 = save_temp_image(page_images[1])
-                    try:
-                        data = extract_page(
-                            tmp_img,
-                            client=client,
-                            cache=cache,
-                            force=force_ocr,
-                            model=model,
-                            usage_out=usage_log,
-                            second_image_path=tmp_img_2,
-                            include_figures=wants_figures,
-                        )
-                    finally:
-                        Path(tmp_img).unlink(missing_ok=True)
-                        Path(tmp_img_2).unlink(missing_ok=True)
-                elif wants_figures:
-                    page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
-                    tmp_img = save_temp_image(page_images[0])
-                    try:
-                        data = extract_page(
-                            tmp_img,
-                            client=client,
-                            cache=cache,
-                            force=force_ocr,
-                            model=model,
-                            usage_out=usage_log,
-                            include_figures=True,
-                        )
-                    finally:
-                        Path(tmp_img).unlink(missing_ok=True)
+                    all_results.append({
+                        "fname": fname,
+                        "page": page_idx,
+                        "page_end": page_idx + pages_used - 1,
+                        "parsed": parsed,
+                        "answer": answer,
+                        "flagged": answer is None,
+                        "pdf_path": pdf_path,
+                        "pages_used": pages_used,
+                        "tricky": bool(notes),
+                        "notes": notes,
+                        "error": None,
+                    })
 
-                pages_used = int(data.get("pages_used") or 1)
-                if used_next_page and (data.get("correct_answer") is not None or data.get("solution")):
-                    pages_used = max(pages_used, 2)
-                figures = materialise_figures(
-                    data.get("figures", []),
-                    page_images[:pages_used],
-                    figures_dir,
-                    f"{Path(fname).stem}_p{page_idx + 1}",
+                except Exception as exc:
+                    all_results.append({
+                        "fname": fname,
+                        "page": page_idx,
+                        "page_end": page_idx,
+                        "parsed": None,
+                        "answer": None,
+                        "flagged": True,
+                        "pdf_path": pdf_path,
+                        "pages_used": 1,
+                        "tricky": True,
+                        "notes": [str(exc)],
+                        "error": str(exc),
+                    })
+
+                pages_used = all_results[-1].get("pages_used", 1)
+                pages_done += pages_used
+                st.session_state.results = all_results
+                st.session_state.usage_log = usage_log
+                st.session_state.model_used = model
+                st.session_state.figures_dir = figures_dir
+                _checkpoint_processing(tmpdir, all_results, usage_log, model, figures_dir)
+                progress.progress(
+                    _progress_value(pages_done, total_pages),
+                    text=f"{pages_done} / {total_pages} pages processed",
                 )
-                question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
-                solution_figures = []
-                question_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section", "question") == "question"]
-                solution_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section") == "solution"]
-                notes = _result_notes(data, pages_used, figures, used_next_page)
-
-                parsed = ParsedQuestion(
-                    question=data.get("question", ""),
-                    choices=data.get("choices", {}),
-                    solution=data.get("solution"),
-                    figures=question_figures,
-                    solution_figures=solution_figures,
-                    tables=question_tables,
-                    solution_tables=solution_tables,
-                )
-                answer = data.get("correct_answer")
-
-                all_results.append({
-                    "fname": fname,
-                    "page": page_idx,
-                    "page_end": page_idx + pages_used - 1,
-                    "parsed": parsed,
-                    "answer": answer,
-                    "flagged": answer is None,
-                    "pdf_path": pdf_path,
-                    "pages_used": pages_used,
-                    "tricky": bool(notes),
-                    "notes": notes,
-                    "error": None,
-                })
-
-            except Exception as exc:
-                all_results.append({
-                    "fname": fname,
-                    "page": page_idx,
-                    "page_end": page_idx,
-                    "parsed": None,
-                    "answer": None,
-                    "flagged": True,
-                    "pdf_path": pdf_path,
-                    "pages_used": 1,
-                    "tricky": True,
-                    "notes": [str(exc)],
-                    "error": str(exc),
-                })
-
-            pages_used = all_results[-1].get("pages_used", 1)
-            pages_done += pages_used
-            progress.progress(
-                pages_done / total_pages,
-                text=f"{pages_done} / {total_pages} pages processed",
-            )
-            page_idx += pages_used
+                page_idx += pages_used
+    except Exception as exc:
+        processing_error = str(exc)
 
     progress.empty()
     status.empty()
     st.session_state.results = all_results
     st.session_state.usage_log = usage_log
     st.session_state.model_used = model
-    st.session_state.processed = True
-    st.rerun()
+    st.session_state.processed = bool(all_results)
+    st.session_state.processing_error = processing_error
+    if processing_error:
+        st.warning("Processing stopped early. Partial results were recovered for review and download.")
+    else:
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
+
+if st.session_state.processing_error:
+    st.warning(f"Recovered partial run after error: {st.session_state.processing_error}")
 
 if not (st.session_state.processed and st.session_state.results):
     st.stop()
@@ -435,32 +496,6 @@ if flagged:
 
 st.divider()
 st.subheader("Download")
-
-
-def build_tex(results: list, corrections: dict) -> str:
-    preamble = (
-        "\\documentclass[12pt,addpoints]{exam}\n"
-        "\\usepackage{amsmath,amssymb,amsfonts}\n"
-        "\\usepackage{graphicx}\n\n"
-        "\\begin{document}\n"
-        "\\begin{questions}\n"
-    )
-    postamble = "\n\\end{questions}\n\\end{document}\n"
-
-    blocks = []
-    for r in results:
-        if r["error"] or r["parsed"] is None:
-            continue
-        key = f"{r['fname']}:{r['page']}"
-        answer = corrections.get(key, r["answer"])
-        source = f"{Path(r['fname']).stem} p{r['page'] + 1}"
-        if r.get("page_end", r["page"]) > r["page"]:
-            source += f"-{r['page_end'] + 1}"
-        blocks.append(render_question(r["parsed"], answer, source))
-
-    return preamble + "\n\n".join(blocks) + postamble
-
-
 tex_content = build_tex(results, corrections)
 tricky_pdf_paths = sorted(
     {
