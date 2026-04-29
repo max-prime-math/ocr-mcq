@@ -28,7 +28,26 @@ logger = logging.getLogger(__name__)
 # Prompt & schema
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_SINGLE = """\
+You are processing a scanned multiple-choice exam page. Each page normally
+contains exactly one question with answer choices labelled A through E. One
+choice may have a visible mark indicating the correct answer. Some pages
+also include a written solution or explanation below the answer choices.
+
+Your job:
+1. Extract the full question stem (preserve LaTeX math).
+2. Extract the text of each answer choice A–E (preserve LaTeX math).
+3. Identify which choice is marked as correct.
+4. If there is a written solution or explanation on the page, extract it as
+   the solution. If there is no solution text, set solution to null.
+
+LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
+
+If the correct-answer mark is absent, ambiguous, or not legible, set
+correct_answer to null — never guess silently.\
+"""
+
+_SYSTEM_PROMPT_EXTENDED = """\
 You are processing scanned multiple-choice exam pages. The input will
 contain either:
 - one page image, or
@@ -72,7 +91,56 @@ If there is no second image, pages_used must be 1 and figures may still
 refer only to page 1.\
 """
 
-_OUTPUT_SCHEMA = {
+_OUTPUT_SCHEMA_SINGLE = {
+    "type": "object",
+    "properties": {
+        "question": {
+            "type": "string",
+            "description": "Full question stem with LaTeX math preserved.",
+        },
+        "choices": {
+            "type": "object",
+            "description": "Answer choices A through E.",
+            "properties": {
+                "A": {"type": "string"},
+                "B": {"type": "string"},
+                "C": {"type": "string"},
+                "D": {"type": "string"},
+                "E": {"type": "string"},
+            },
+            "required": ["A", "B", "C", "D", "E"],
+            "additionalProperties": False,
+        },
+        "correct_answer": {
+            "description": "Letter of the marked choice, or null if unclear.",
+            "anyOf": [
+                {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+                {"type": "null"},
+            ],
+        },
+        "pages_used": {
+            "type": "integer",
+            "enum": [1],
+            "description": "Single-page mode always uses one page.",
+        },
+        "solution": {
+            "description": "Written solution or explanation if present on the page, or null.",
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ],
+        },
+        "figures": {
+            "type": "array",
+            "items": {},
+            "description": "Always empty in single-page economical mode.",
+        },
+    },
+    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures"],
+    "additionalProperties": False,
+}
+
+_OUTPUT_SCHEMA_EXTENDED = {
     "type": "object",
     "properties": {
         "question": {
@@ -148,6 +216,7 @@ def extract_page(
     model: str = "claude-haiku-4-5",
     usage_out: Optional[list] = None,
     second_image_path: Optional[str] = None,
+    include_figures: bool = False,
 ) -> dict:
     """
     Extract question data from a full-page exam image.
@@ -172,6 +241,7 @@ def extract_page(
     image_paths = [image_path]
     if second_image_path is not None:
         image_paths.append(second_image_path)
+    extended_mode = second_image_path is not None or include_figures
 
     if cache is not None:
         if force:
@@ -211,7 +281,7 @@ def extract_page(
         system=[
             {
                 "type": "text",
-                "text": _SYSTEM_PROMPT,
+                "text": _SYSTEM_PROMPT_EXTENDED if extended_mode else _SYSTEM_PROMPT_SINGLE,
                 # Cache the system prompt — same for every page.
                 "cache_control": {"type": "ephemeral"},
             }
@@ -224,10 +294,18 @@ def extract_page(
                     {
                         "type": "text",
                         "text": (
-                            "Extract the question, all five answer choices (A–E), "
-                            "the marked correct answer, and any figure bounding boxes. "
-                            "If the question continues onto image 2, combine both pages "
-                            "and set pages_used to 2; otherwise set pages_used to 1."
+                            (
+                                "Extract the question, all five answer choices (A–E), "
+                                "the marked correct answer, and any figure bounding boxes. "
+                                "If the question continues onto image 2, combine both pages "
+                                "and set pages_used to 2; otherwise set pages_used to 1."
+                            )
+                            if extended_mode
+                            else (
+                                "Extract the question, all five answer choices (A–E), "
+                                "the marked correct answer, and any written solution text "
+                                "from this exam page. Set pages_used to 1 and figures to []."
+                            )
                         ),
                     },
                 ],
@@ -236,7 +314,7 @@ def extract_page(
         output_config={
             "format": {
                 "type": "json_schema",
-                "schema": _OUTPUT_SCHEMA,
+                "schema": _OUTPUT_SCHEMA_EXTENDED if extended_mode else _OUTPUT_SCHEMA_SINGLE,
             }
         },
     )
@@ -266,3 +344,26 @@ def extract_page(
         cache.put(image_paths, result)
 
     return result
+
+
+def should_retry_with_next_page(result: dict) -> bool:
+    """
+    Return True when a single-page extraction looks incomplete enough that
+    retrying with the next PDF page is worthwhile.
+
+    This is intentionally conservative: it retries when the model failed to
+    recover the expected A–E structure, which is the common signature of a
+    question whose answer choices spill onto the following page.
+    """
+    choices = result.get("choices") or {}
+    if not isinstance(choices, dict):
+        return True
+
+    present = sum(1 for key in ("A", "B", "C", "D", "E") if choices.get(key))
+    question = (result.get("question") or "").strip()
+
+    if not question:
+        return True
+    if present < 5:
+        return True
+    return False

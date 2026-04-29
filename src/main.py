@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from cache import MathpixCache as VisionCache
 from latex_writer import append_to_combined, finalise_combined, write_tex_file
-from ocr import extract_page
+from ocr import extract_page, should_retry_with_next_page
 from parsing import ParsedQuestion
 from utils import (
     crop_bottom,
@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bottom-crop-start", type=float, default=None, help="Where the answer area starts for review display (0–1).")
     p.add_argument("--min-confidence", type=float, default=None, help="Minimum confidence to auto-accept an answer (0–1).")
     p.add_argument("--model", default=None, help=f"Claude model ID (default: {DEFAULT_MODEL}).")
+    p.add_argument("--include-figures", action="store_true", help="Extract diagrams/figures and include them in the output bundle.")
     p.add_argument("--config", default="config.json", help="Path to JSON config file.")
     p.add_argument("--review-csv", default="review/review.csv", help="Path to review CSV.")
     p.add_argument("--corrections", default="review/corrections.json", help="Path to corrections JSON.")
@@ -172,12 +173,13 @@ def process_page(
     """
     model = cfg.get("model", DEFAULT_MODEL)
 
-    page_images = [render_page_to_image(pdf_path, page_index, dpi=cfg.get("dpi", 300))]
-    if next_page_index is not None:
-        page_images.append(render_page_to_image(pdf_path, next_page_index, dpi=cfg.get("dpi", 300)))
+    primary_dpi = int(cfg.get("dpi", 220))
+    fallback_dpi = int(cfg.get("fallback_dpi", max(primary_dpi, 240)))
+    include_figures = bool(cfg.get("include_figures", False))
+
+    page_images = [render_page_to_image(pdf_path, page_index, dpi=primary_dpi)]
 
     tmp = save_temp_image(page_images[0])
-    tmp2 = save_temp_image(page_images[1]) if len(page_images) > 1 else None
     try:
         data = extract_page(
             tmp,
@@ -185,12 +187,43 @@ def process_page(
             cache=cache,
             force=force_ocr,
             model=model,
-            second_image_path=tmp2,
+            include_figures=False,
         )
     finally:
         Path(tmp).unlink(missing_ok=True)
-        if tmp2 is not None:
+
+    if next_page_index is not None and should_retry_with_next_page(data):
+        page_images = [render_page_to_image(pdf_path, page_index, dpi=fallback_dpi)]
+        page_images.append(render_page_to_image(pdf_path, next_page_index, dpi=fallback_dpi))
+        tmp = save_temp_image(page_images[0])
+        tmp2 = save_temp_image(page_images[1])
+        try:
+            data = extract_page(
+                tmp,
+                client=client,
+                cache=cache,
+                force=force_ocr,
+                model=model,
+                second_image_path=tmp2,
+                include_figures=include_figures,
+            )
+        finally:
+            Path(tmp).unlink(missing_ok=True)
             Path(tmp2).unlink(missing_ok=True)
+    elif include_figures:
+        page_images = [render_page_to_image(pdf_path, page_index, dpi=fallback_dpi)]
+        tmp = save_temp_image(page_images[0])
+        try:
+            data = extract_page(
+                tmp,
+                client=client,
+                cache=cache,
+                force=force_ocr,
+                model=model,
+                include_figures=True,
+            )
+        finally:
+            Path(tmp).unlink(missing_ok=True)
 
     pages_used = int(data.get("pages_used") or 1)
     figures = materialise_figures(
@@ -240,6 +273,8 @@ def main() -> None:
         cfg["min_confidence"] = args.min_confidence
     if args.model is not None:
         cfg["model"] = args.model
+    if args.include_figures:
+        cfg["include_figures"] = True
 
     if args.review:
         run_review_mode(args, cfg)

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 import anthropic
 from cache import MathpixCache as VisionCache
 from latex_writer import render_question
-from ocr import extract_page
+from ocr import extract_page, should_retry_with_next_page
 from parsing import ParsedQuestion
 from utils import (
     build_zip_bundle,
@@ -103,6 +103,12 @@ with st.sidebar:
         help="Ignore cached results and re-call Claude for every page.",
     )
 
+    include_figures = st.checkbox(
+        "Extract figures",
+        value=False,
+        help="Slower and slightly more expensive. Enable only when questions contain diagrams or charts that must appear in the output.",
+    )
+
     st.divider()
     st.caption("Cache is stored in `cache/vision/` so repeated runs are cheap.")
 
@@ -162,12 +168,11 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
             status.text(f"{fname} — page {page_idx + 1} of {n}")
 
             try:
-                page_images = [render_page_to_image(pdf_path, page_idx, dpi=200)]
-                if page_idx + 1 < n:
-                    page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=200))
+                primary_dpi = 170
+                fallback_dpi = 240
+                page_images = [render_page_to_image(pdf_path, page_idx, dpi=primary_dpi)]
 
                 tmp_img = save_temp_image(page_images[0])
-                tmp_img_2 = save_temp_image(page_images[1]) if len(page_images) > 1 else None
                 try:
                     data = extract_page(
                         tmp_img,
@@ -176,12 +181,45 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                         force=force_ocr,
                         model=model,
                         usage_out=usage_log,
-                        second_image_path=tmp_img_2,
+                        include_figures=False,
                     )
                 finally:
                     Path(tmp_img).unlink(missing_ok=True)
-                    if tmp_img_2 is not None:
+
+                if page_idx + 1 < n and should_retry_with_next_page(data):
+                    page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
+                    page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=fallback_dpi))
+                    tmp_img = save_temp_image(page_images[0])
+                    tmp_img_2 = save_temp_image(page_images[1])
+                    try:
+                        data = extract_page(
+                            tmp_img,
+                            client=client,
+                            cache=cache,
+                            force=force_ocr,
+                            model=model,
+                            usage_out=usage_log,
+                            second_image_path=tmp_img_2,
+                            include_figures=include_figures,
+                        )
+                    finally:
+                        Path(tmp_img).unlink(missing_ok=True)
                         Path(tmp_img_2).unlink(missing_ok=True)
+                elif include_figures:
+                    page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
+                    tmp_img = save_temp_image(page_images[0])
+                    try:
+                        data = extract_page(
+                            tmp_img,
+                            client=client,
+                            cache=cache,
+                            force=force_ocr,
+                            model=model,
+                            usage_out=usage_log,
+                            include_figures=True,
+                        )
+                    finally:
+                        Path(tmp_img).unlink(missing_ok=True)
 
                 pages_used = int(data.get("pages_used") or 1)
                 figures = materialise_figures(

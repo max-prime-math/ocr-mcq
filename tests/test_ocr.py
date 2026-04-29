@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from ocr import extract_page
+from ocr import extract_page, should_retry_with_next_page
 from cache import MathpixCache as VisionCache
 
 
@@ -125,3 +125,21 @@ def test_extract_page_supports_second_image(tmp_path):
         Path(img2).unlink(missing_ok=True)
 
     assert result["pages_used"] == 1
+
+
+def test_retry_with_next_page_when_choices_are_incomplete():
+    result = {
+        "question": "Large stem",
+        "choices": {"A": "1", "B": "2"},
+        "correct_answer": None,
+    }
+    assert should_retry_with_next_page(result) is True
+
+
+def test_do_not_retry_when_single_page_result_is_complete():
+    result = {
+        "question": "What is 1+1?",
+        "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        "correct_answer": "B",
+    }
+    assert should_retry_with_next_page(result) is False

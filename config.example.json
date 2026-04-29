@@ -3,7 +3,9 @@
 
   "model": "claude-haiku-4-5",
 
-  "dpi": 300,
+  "dpi": 220,
+
+  "include_figures": false,
 
   "bottom_crop_start": 0.5,
 
