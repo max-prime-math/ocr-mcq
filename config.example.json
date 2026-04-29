@@ -5,7 +5,7 @@
 
   "dpi": 220,
 
-  "include_figures": false,
+  "figure_mode": "auto",
 
   "bottom_crop_start": 0.5,
 

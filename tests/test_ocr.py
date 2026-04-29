@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from ocr import extract_page, should_retry_with_next_page
+from ocr import extract_page, should_extract_figures, should_retry_with_next_page
 from cache import MathpixCache as VisionCache
 
 
@@ -144,3 +144,21 @@ def test_do_not_retry_when_single_page_result_is_complete():
         "correct_answer": "B",
     }
     assert should_retry_with_next_page(result) is False
+
+
+def test_auto_figure_detection_triggers_on_diagram_language():
+    result = {
+        "question": "Which graph shown below matches the function?",
+        "choices": {"A": "I", "B": "II", "C": "III", "D": "IV", "E": "V"},
+        "solution": None,
+    }
+    assert should_extract_figures(result) is True
+
+
+def test_auto_figure_detection_stays_off_for_plain_text_question():
+    result = {
+        "question": "What is 1+1?",
+        "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        "solution": "Add the integers.",
+    }
+    assert should_extract_figures(result) is False

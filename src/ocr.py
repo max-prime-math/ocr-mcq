@@ -401,3 +401,45 @@ def should_retry_with_next_page(result: dict) -> bool:
     if present < 5:
         return True
     return False
+
+
+def should_extract_figures(result: dict) -> bool:
+    """
+    Return True when the extracted text strongly suggests that a visual
+    figure is required for the question.
+
+    This is a cheap heuristic used by figure mode ``auto`` so we only pay
+    for the heavier figure-aware extraction on pages that likely need it.
+    """
+    texts: list[str] = []
+    question = result.get("question")
+    if isinstance(question, str):
+        texts.append(question)
+
+    solution = result.get("solution")
+    if isinstance(solution, str):
+        texts.append(solution)
+
+    choices = result.get("choices") or {}
+    if isinstance(choices, dict):
+        for value in choices.values():
+            if isinstance(value, str):
+                texts.append(value)
+
+    haystack = " ".join(texts).lower()
+    if not haystack:
+        return False
+
+    keywords = (
+        "figure",
+        "fig.",
+        "diagram",
+        "graph",
+        "shown",
+        "image",
+        "pictured",
+        "sketch",
+        "plot",
+        "illustration",
+    )
+    return any(token in haystack for token in keywords)

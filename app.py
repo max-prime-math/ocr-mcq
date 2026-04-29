@@ -18,6 +18,7 @@ import anthropic
 from cache import MathpixCache as VisionCache
 from latex_writer import render_question
 from ocr import extract_page, should_retry_with_next_page
+from ocr import should_extract_figures
 from parsing import ParsedQuestion
 from utils import (
     build_zip_bundle,
@@ -105,10 +106,11 @@ with st.sidebar:
         help="Ignore cached results and re-call Claude for every page.",
     )
 
-    include_figures = st.checkbox(
-        "Extract figures",
-        value=False,
-        help="Slower and slightly more expensive. Enable only when questions contain diagrams or charts that must appear in the output.",
+    figure_mode = st.segmented_control(
+        "Figure extraction",
+        options=["Off", "Auto", "On"],
+        default="Auto",
+        help="Off: never crop figures. Auto: detect per question. On: always run figure-aware extraction.",
     )
 
     st.divider()
@@ -189,6 +191,9 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                 finally:
                     Path(tmp_img).unlink(missing_ok=True)
 
+                mode = (figure_mode or "Auto").lower()
+                wants_figures = mode == "on" or (mode == "auto" and should_extract_figures(data))
+
                 if page_idx + 1 < n and should_retry_with_next_page(data):
                     page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
                     page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=fallback_dpi))
@@ -203,12 +208,12 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                             model=model,
                             usage_out=usage_log,
                             second_image_path=tmp_img_2,
-                            include_figures=include_figures,
+                            include_figures=wants_figures,
                         )
                     finally:
                         Path(tmp_img).unlink(missing_ok=True)
                         Path(tmp_img_2).unlink(missing_ok=True)
-                elif include_figures:
+                elif wants_figures:
                     page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
                     tmp_img = save_temp_image(page_images[0])
                     try:
