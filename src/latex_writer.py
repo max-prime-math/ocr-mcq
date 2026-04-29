@@ -14,6 +14,39 @@ from parsing import ParsedQuestion, CHOICE_LETTERS
 
 logger = logging.getLogger(__name__)
 
+_UNICODE_MATH_REPLACEMENTS = {
+    "−": "-",
+    "∞": r"\infty",
+    "≤": r"\le",
+    "≥": r"\ge",
+    "≈": r"\approx",
+    "≠": r"\ne",
+    "×": r"\times",
+}
+
+_PROTECTED_MATH_PATTERN = re.compile(
+    r"(\\\(.+?\\\)|\\\[.+?\\\]|\$\$.+?\$\$|(?<!\\)\$.+?(?<!\\)\$)",
+    re.DOTALL,
+)
+
+_INTERVAL_ATOM = r"(?:-?(?:\d+(?:\.\d+)?|\\infty))"
+_INTERVAL_PATTERN = re.compile(
+    rf"(?<!\\)((?:[\(\[]\s*{_INTERVAL_ATOM}\s*,\s*{_INTERVAL_ATOM}\s*[\)\]])(?:\s+and\s+[\(\[]\s*{_INTERVAL_ATOM}\s*,\s*{_INTERVAL_ATOM}\s*[\)\]])*(?:\s+only)?)"
+)
+_RANGE_PATTERN = re.compile(
+    r"(?<!\\)("
+    r"(?:-?\d+(?:\.\d+)?)\s*(?:<=|>=|\\leq?|\\geq?)\s*[A-Za-z]\s*(?:<=|>=|\\leq?|\\geq?)\s*(?:-?\d+(?:\.\d+)?)"
+    r"(?:\s+and\s+(?:-?\d+(?:\.\d+)?)\s*(?:<=|>=|\\leq?|\\geq?)\s*[A-Za-z]\s*(?:<=|>=|\\leq?|\\geq?)\s*(?:-?\d+(?:\.\d+)?))*"
+    r")"
+)
+_COMMAND_MATH_PATTERN = re.compile(
+    r"("
+    r"\\(?:int|iint|iiint|sum|prod|lim|frac|dfrac|tfrac|sqrt|sin|cos|tan|cot|sec|csc|ln|log|exp|Rightarrow)"
+    r"(?:\\.|[^?.!,;:])*"
+    r")"
+)
+_MATH_ENVIRONMENTS = ("array", "cases", "matrix", "pmatrix", "bmatrix", "vmatrix", "Vmatrix")
+
 # Preamble written at the top of every generated .tex file.
 _PREAMBLE = r"""\documentclass[12pt,addpoints]{exam}
 \usepackage{amsmath,amssymb,amsfonts}
@@ -35,8 +68,55 @@ def _escape_percent(text: str) -> str:
     return re.sub(r"(?<!\\)%", r"\\%", text)
 
 
+def _strip_control_chars(text: str) -> str:
+    return "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
+
+
+def _normalise_unicode_math(text: str) -> str:
+    repaired = _strip_control_chars(text)
+    for src, dst in _UNICODE_MATH_REPLACEMENTS.items():
+        repaired = repaired.replace(src, dst)
+    repaired = re.sub(r"(?<![A-Za-z\\])(?:bigint|igint)(?=\s*_)", r"\\int", repaired)
+    return repaired
+
+
 def _count_unescaped_dollars(text: str) -> int:
     return len(re.findall(r"(?<!\\)\$", text))
+
+
+def _wrap_inline_math(match: re.Match[str]) -> str:
+    text = match.group(1).strip()
+    return rf"\({text}\)"
+
+
+def _wrap_math_environment_block(text: str) -> str | None:
+    stripped = text.strip()
+    for env in _MATH_ENVIRONMENTS:
+        begin = rf"\begin{{{env}}}"
+        end = rf"\end{{{env}}}"
+        if stripped.startswith(begin) and stripped.endswith(end):
+            return rf"\[{stripped}\]"
+    return None
+
+
+def _wrap_bare_math_spans(text: str) -> str:
+    parts: list[str] = []
+    last = 0
+    for match in _PROTECTED_MATH_PATTERN.finditer(text):
+        plain = text[last:match.start()]
+        plain = _INTERVAL_PATTERN.sub(_wrap_inline_math, plain)
+        plain = _RANGE_PATTERN.sub(_wrap_inline_math, plain)
+        plain = _COMMAND_MATH_PATTERN.sub(_wrap_inline_math, plain)
+        parts.append(plain)
+        parts.append(match.group(0))
+        last = match.end()
+
+    tail = text[last:]
+    tail = _INTERVAL_PATTERN.sub(_wrap_inline_math, tail)
+    tail = _RANGE_PATTERN.sub(_wrap_inline_math, tail)
+    tail = _COMMAND_MATH_PATTERN.sub(_wrap_inline_math, tail)
+    parts.append(tail)
+    return "".join(parts)
 
 
 def _balance_delimited_math(text: str) -> str:
@@ -91,7 +171,13 @@ def _looks_like_bare_math(text: str) -> bool:
 
 
 def _render_text(text: str) -> str:
-    cleaned = _balance_delimited_math(_escape_percent(text))
+    env_block = _wrap_math_environment_block(text)
+    if env_block is not None:
+        return env_block
+
+    cleaned = _normalise_unicode_math(text)
+    cleaned = _wrap_bare_math_spans(cleaned)
+    cleaned = _balance_delimited_math(_escape_percent(cleaned))
     if _looks_like_bare_math(cleaned):
         return rf"\({cleaned}\)"
     return cleaned
@@ -112,7 +198,7 @@ def _render_tables(lines: list[str], tables: list[dict]) -> None:
         latex = table.get("latex")
         if not latex:
             continue
-        lines.append(latex)
+        lines.append(_render_text(latex))
 
 
 def _by_placement(items: list[dict], placement: str) -> list[dict]:

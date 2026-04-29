@@ -125,32 +125,97 @@ def _refine_figure_crop(image: Image.Image, box: tuple[int, int, int, int]) -> t
     region_np = np.array(region.convert("L"))
     _, thresh = cv2.threshold(region_np, 235, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    region_area = max(1, rw * rh)
+    noise_area = max(18, int(region_area * 0.00003))
+    text_height = max(18, int(rh * 0.07))
+    text_width = max(140, int(rw * 0.28))
+    graphic_area = max(240, int(region_area * 0.0005))
+    long_span = max(40, int(max(rw, rh) * 0.12))
+    gap = max(18, int(max(rw, rh) * 0.035))
+    label_gap = max(12, int(max(rw, rh) * 0.025))
 
-    min_area = max(200, int(rw * rh * 0.0015))
-    candidates: list[tuple[int, int, int, int]] = []
+    components: list[dict] = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < min_area:
+        if area < noise_area:
             continue
         x, y, w, h = cv2.boundingRect(cnt)
-        if w < 20 or h < 20:
+        if w < 3 or h < 3:
             continue
-        # Ignore long thin contours that are usually text rules/underlines.
-        aspect = w / max(h, 1)
-        if aspect > 18 or aspect < 0.05:
-            continue
-        candidates.append((x, y, w, h))
 
-    if not candidates:
+        fill = area / max(1, w * h)
+        is_long_rule = (w >= long_span and h <= max(14, int(rh * 0.025))) or (
+            h >= long_span and w <= max(14, int(rw * 0.025))
+        )
+        is_text_like = (
+            h <= text_height
+            and w <= text_width
+            and area <= max(1500, int(region_area * 0.008))
+            and fill <= 0.7
+            and not is_long_rule
+        )
+        is_graphic = is_long_rule or area >= graphic_area or w >= long_span or h >= long_span
+        components.append(
+            {
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "area": area,
+                "fill": fill,
+                "text_like": is_text_like,
+                "graphic": is_graphic,
+            }
+        )
+
+    graphic_components = [comp for comp in components if comp["graphic"] and not comp["text_like"]]
+    if not graphic_components:
         return box
 
-    x1 = min(x for x, y, w, h in candidates)
-    y1 = min(y for x, y, w, h in candidates)
-    x2 = max(x + w for x, y, w, h in candidates)
-    y2 = max(y + h for x, y, w, h in candidates)
+    graphic_components.sort(key=lambda comp: comp["area"], reverse=True)
+    seed = graphic_components[0]
+    cluster = [seed]
+    x1 = seed["x"]
+    y1 = seed["y"]
+    x2 = seed["x"] + seed["w"]
+    y2 = seed["y"] + seed["h"]
+
+    changed = True
+    while changed:
+        changed = False
+        for comp in graphic_components:
+            if comp in cluster:
+                continue
+            cx1 = comp["x"]
+            cy1 = comp["y"]
+            cx2 = comp["x"] + comp["w"]
+            cy2 = comp["y"] + comp["h"]
+            if cx2 < x1 - gap or cx1 > x2 + gap or cy2 < y1 - gap or cy1 > y2 + gap:
+                continue
+            cluster.append(comp)
+            x1 = min(x1, cx1)
+            y1 = min(y1, cy1)
+            x2 = max(x2, cx2)
+            y2 = max(y2, cy2)
+            changed = True
+
+    label_candidates = [
+        comp
+        for comp in components
+        if comp["text_like"]
+        and comp["x"] + comp["w"] >= x1 - label_gap
+        and comp["x"] <= x2 + label_gap
+        and comp["y"] + comp["h"] >= y1 - label_gap
+        and comp["y"] <= y2 + label_gap
+    ]
+    if label_candidates:
+        x1 = min([x1] + [comp["x"] for comp in label_candidates])
+        y1 = min([y1] + [comp["y"] for comp in label_candidates])
+        x2 = max([x2] + [comp["x"] + comp["w"] for comp in label_candidates])
+        y2 = max([y2] + [comp["y"] + comp["h"] for comp in label_candidates])
 
     refined_area = max(1, (x2 - x1) * (y2 - y1))
-    original_area = max(1, rw * rh)
+    original_area = region_area
 
     # If refinement does not materially shrink the crop, keep the original.
     if refined_area > original_area * 0.92:

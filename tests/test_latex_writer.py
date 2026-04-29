@@ -80,6 +80,85 @@ def test_choice_math_is_wrapped_when_not_in_math_mode():
     assert r"\choice undefined" in block
 
 
+def test_choice_interval_text_is_wrapped_and_unicode_math_is_normalised():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={
+            "A": "(−∞, 0.831) and (7.384, ∞)",
+            "B": "1 ≤ x ≤ 1.691",
+            "C": "plain text",
+            "D": "0",
+            "E": "1",
+        },
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"\CorrectChoice \((-\infty, 0.831) and (7.384, \infty)\)" in block
+    assert r"\choice \(1 \le x \le 1.691\)" in block
+    assert r"\choice plain text" in block
+
+
+def test_solution_normalises_unicode_math_inside_existing_delimiters():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"The interval is $(−\infty, ∞)$.",
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"The interval is $(-\infty, \infty)$." in block
+
+
+def test_question_wraps_embedded_command_math_inside_prose():
+    parsed = ParsedQuestion(
+        question=r"What are all values of k for which \int_{-3}^{k} x^2 dx = 0?",
+        choices={"A": "-3", "B": "0", "C": "3", "D": "-3 and 3", "E": "-3, 0, and 3"},
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"What are all values of k for which \(\int_{-3}^{k} x^2 dx = 0\)?" in block
+
+
+def test_question_table_array_block_is_wrapped_in_display_math():
+    parsed = ParsedQuestion(
+        question="Use the table.",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[{"latex": r"\begin{array}{|c|c|}\hline x & f(x) \\\hline 1 & 2 \\\hline\end{array}", "placement": "stem"}],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"\[\begin{array}{|c|c|}\hline x & f(x) \\\hline 1 & 2 \\\hline\end{array}\]" in block
+
+
+def test_question_strips_control_chars_and_repairs_igint_token():
+    parsed = ParsedQuestion(
+        question="The length is \x08igint_1^4 \\sqrt{1+9x^4}\\, dx.",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert "\x08" not in block
+    assert r"\(\int_1^4 \sqrt{1+9x^4}\, dx\)" in block
+
+
 def test_figures_are_included_in_output():
     parsed = ParsedQuestion(
         question="See the graph.",
