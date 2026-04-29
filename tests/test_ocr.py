@@ -74,6 +74,9 @@ def test_extract_page_returns_structured_data(tmp_path):
     assert result["question"] == expected["question"]
     assert result["correct_answer"] == "C"
     assert set(result["choices"].keys()) == {"A", "B", "C", "D", "E"}
+    assert result["pages_used"] == 1
+    assert result["figures"] == []
+    assert result["tables"] == []
 
 
 def test_extract_page_uses_cache(tmp_path):
@@ -128,6 +131,41 @@ def test_extract_page_supports_second_image(tmp_path):
     assert result["pages_used"] == 1
 
 
+def test_extract_page_normalises_single_page_fields_when_model_omits_them():
+    payload = {
+        "question": "What is 1+1?",
+        "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        "correct_answer": "B",
+        "solution": "Add the integers.",
+    }
+    block = MagicMock()
+    block.type = "text"
+    block.text = json.dumps(payload)
+
+    usage = MagicMock()
+    usage.input_tokens = 100
+    usage.output_tokens = 50
+    usage.cache_read_input_tokens = 0
+    usage.cache_creation_input_tokens = 0
+
+    response = MagicMock()
+    response.content = [block]
+    response.usage = usage
+
+    client = MagicMock()
+    client.messages.create.return_value = response
+
+    img = _tmp_png()
+    try:
+        result = extract_page(img, client=client)
+    finally:
+        Path(img).unlink(missing_ok=True)
+
+    assert result["pages_used"] == 1
+    assert result["figures"] == []
+    assert result["tables"] == []
+
+
 def test_retry_with_next_page_when_choices_are_incomplete():
     result = {
         "question": "Large stem",
@@ -170,5 +208,14 @@ def test_auto_figure_detection_stays_off_for_plain_text_question():
         "question": "What is 1+1?",
         "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
         "solution": "Add the integers.",
+    }
+    assert should_extract_figures(result) is False
+
+
+def test_auto_figure_detection_ignores_single_weak_visual_cue():
+    result = {
+        "question": "Which statement shown is correct?",
+        "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        "solution": None,
     }
     assert should_extract_figures(result) is False

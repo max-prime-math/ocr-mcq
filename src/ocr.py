@@ -29,22 +29,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_SINGLE = """\
-You are processing a scanned multiple-choice exam page. Each page normally
-contains exactly one question with answer choices labelled A through E. One
-choice may have a visible mark indicating the correct answer. Some pages
-also include a written solution or explanation below the answer choices.
+Process one scanned multiple-choice exam page.
 
-Your job:
-1. Extract the full question stem (preserve LaTeX math).
-2. Extract the text of each answer choice A–E (preserve LaTeX math).
-3. Identify which choice is marked as correct.
-4. If there is a written solution or explanation on the page, extract it as
-   the solution. If there is no solution text, set solution to null.
+Extract:
+1. The full question stem.
+2. Choices A through E.
+3. The marked correct answer, or null if absent or unclear.
+4. Any written solution or explanation below the choices, or null if none.
 
-LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
-
-If the correct-answer mark is absent, ambiguous, or not legible, set
-correct_answer to null — never guess silently.\
+Preserve math as LaTeX using \\(...\\) for inline math and \\[...\\] for display math.
+Do not guess silently.\
 """
 
 _SYSTEM_PROMPT_EXTENDED = """\
@@ -114,13 +108,9 @@ refer only to page 1.\
 _OUTPUT_SCHEMA_SINGLE = {
     "type": "object",
     "properties": {
-        "question": {
-            "type": "string",
-            "description": "Full question stem with LaTeX math preserved.",
-        },
+        "question": {"type": "string"},
         "choices": {
             "type": "object",
-            "description": "Answer choices A through E.",
             "properties": {
                 "A": {"type": "string"},
                 "B": {"type": "string"},
@@ -132,36 +122,19 @@ _OUTPUT_SCHEMA_SINGLE = {
             "additionalProperties": False,
         },
         "correct_answer": {
-            "description": "Letter of the marked choice, or null if unclear.",
             "anyOf": [
                 {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
                 {"type": "null"},
             ],
         },
-        "pages_used": {
-            "type": "integer",
-            "enum": [1],
-            "description": "Single-page mode always uses one page.",
-        },
         "solution": {
-            "description": "Written solution or explanation if present on the page, or null.",
             "anyOf": [
                 {"type": "string"},
                 {"type": "null"},
             ],
         },
-        "figures": {
-            "type": "array",
-            "items": {},
-            "description": "Always empty in single-page economical mode.",
-        },
-        "tables": {
-            "type": "array",
-            "items": {},
-            "description": "Always empty in single-page economical mode.",
-        },
     },
-    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures", "tables"],
+    "required": ["question", "choices", "correct_answer", "solution"],
     "additionalProperties": False,
 }
 
@@ -242,6 +215,15 @@ _OUTPUT_SCHEMA_EXTENDED = {
 }
 
 
+def _normalise_single_page_result(result: dict) -> dict:
+    """Add fixed fields omitted from the economical single-page schema."""
+    normalised = dict(result)
+    normalised["pages_used"] = 1
+    normalised["figures"] = []
+    normalised["tables"] = []
+    return normalised
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -304,12 +286,13 @@ def extract_page(
                 },
             }
         )
-        content_blocks.append(
-            {
-                "type": "text",
-                "text": f"Image {idx} of {len(image_paths)}.",
-            }
-        )
+        if extended_mode:
+            content_blocks.append(
+                {
+                    "type": "text",
+                    "text": f"Image {idx} of {len(image_paths)}.",
+                }
+            )
 
     logger.debug("Calling Claude Vision (%s) for %s", model, image_paths)
 
@@ -333,17 +316,13 @@ def extract_page(
                         "type": "text",
                         "text": (
                             (
-                                "Extract the question, all five answer choices (A–E), "
-                                "the marked correct answer, any tight non-table figure bounding boxes, "
-                                "and any tables as LaTeX, each with section and placement labels. "
-                                "If the question continues onto image 2, combine both pages "
-                                "and set pages_used to 2; otherwise set pages_used to 1."
+                                "Extract the question, choices A-E, marked answer, any tight non-table figure boxes, "
+                                "and any tables as LaTeX with section and placement labels. "
+                                "If image 2 continues or repeats the same question with the answer or solution, combine both pages."
                             )
                             if extended_mode
                             else (
-                                "Extract the question, all five answer choices (A–E), "
-                                "the marked correct answer, and any written solution text "
-                                "from this exam page. Set pages_used to 1 and figures/tables to []."
+                                "Extract the question, choices A-E, marked answer, and any written solution text from this page."
                             )
                         ),
                     },
@@ -360,6 +339,8 @@ def extract_page(
 
     raw = next(b.text for b in response.content if b.type == "text")
     result = json.loads(raw)
+    if not extended_mode:
+        result = _normalise_single_page_result(result)
 
     u = response.usage
     usage = {
@@ -438,16 +419,24 @@ def should_extract_figures(result: dict) -> bool:
     if not haystack:
         return False
 
-    keywords = (
+    strong_keywords = (
         "figure",
         "fig.",
         "diagram",
         "graph",
-        "shown",
-        "image",
         "pictured",
         "sketch",
         "plot",
-        "illustration",
+        "scatterplot",
+        "histogram",
+        "table above",
+        "table below",
     )
-    return any(token in haystack for token in keywords)
+    if any(token in haystack for token in strong_keywords):
+        return True
+
+    weak_hits = 0
+    for token in ("shown", "below", "above", "following"):
+        if token in haystack:
+            weak_hits += 1
+    return weak_hits >= 2
