@@ -29,6 +29,24 @@ from utils import (
     save_temp_image,
 )
 
+
+def _result_notes(data: dict, pages_used: int, figures: list[dict], next_page_used: bool) -> list[str]:
+    notes: list[str] = []
+    question = (data.get("question") or "").strip().lower()
+    answer = data.get("correct_answer")
+    solution = (data.get("solution") or "").strip()
+    if "solution on the next page" in question:
+        notes.append("question says solution on next page")
+    if pages_used > 1:
+        notes.append("used multiple pages")
+    if answer is None:
+        notes.append("correct answer not detected")
+    if figures:
+        notes.append(f"kept {len(figures)} figure crop(s)")
+    if next_page_used and answer is None and not solution:
+        notes.append("page may need next-page pairing")
+    return notes
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -194,7 +212,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                 mode = (figure_mode or "Auto").lower()
                 wants_figures = mode == "on" or (mode == "auto" and should_extract_figures(data))
 
-                if page_idx + 1 < n and should_retry_with_next_page(data):
+                used_next_page = page_idx + 1 < n and should_retry_with_next_page(data)
+                if used_next_page:
                     page_images = [render_page_to_image(pdf_path, page_idx, dpi=fallback_dpi)]
                     page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=fallback_dpi))
                     tmp_img = save_temp_image(page_images[0])
@@ -230,6 +249,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                         Path(tmp_img).unlink(missing_ok=True)
 
                 pages_used = int(data.get("pages_used") or 1)
+                if used_next_page and (data.get("correct_answer") is not None or data.get("solution")):
+                    pages_used = max(pages_used, 2)
                 figures = materialise_figures(
                     data.get("figures", []),
                     page_images[:pages_used],
@@ -237,9 +258,10 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                     f"{Path(fname).stem}_p{page_idx + 1}",
                 )
                 question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
-                solution_figures = [fig for fig in figures if fig.get("section") == "solution"]
+                solution_figures = []
                 question_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section", "question") == "question"]
                 solution_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section") == "solution"]
+                notes = _result_notes(data, pages_used, figures, used_next_page)
 
                 parsed = ParsedQuestion(
                     question=data.get("question", ""),
@@ -261,6 +283,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                     "flagged": answer is None,
                     "pdf_path": pdf_path,
                     "pages_used": pages_used,
+                    "tricky": bool(notes),
+                    "notes": notes,
                     "error": None,
                 })
 
@@ -274,6 +298,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                     "flagged": True,
                     "pdf_path": pdf_path,
                     "pages_used": 1,
+                    "tricky": True,
+                    "notes": [str(exc)],
                     "error": str(exc),
                 })
 
@@ -343,6 +369,17 @@ if errors:
             else:
                 page_label = f"page {r['page'] + 1}"
             st.error(f"{r['fname']} {page_label}: {r['error']}")
+
+tricky_results = [r for r in results if r.get("tricky")]
+if tricky_results:
+    with st.expander(f"Tricky PDFs ({len({r['fname'] for r in tricky_results})})"):
+        for r in tricky_results[:50]:
+            page_label = f"p{r['page'] + 1}"
+            if r.get("page_end", r["page"]) > r["page"]:
+                page_label = f"p{r['page'] + 1}-{r['page_end'] + 1}"
+            st.write(f"{r['fname']} {page_label}: {', '.join(r.get('notes', []))}")
+        if len(tricky_results) > 50:
+            st.caption("Showing first 50 tricky results.")
 
 # ---------------------------------------------------------------------------
 # Review flagged pages
@@ -425,6 +462,20 @@ def build_tex(results: list, corrections: dict) -> str:
 
 
 tex_content = build_tex(results, corrections)
+tricky_pdf_paths = sorted(
+    {
+        (r["pdf_path"], f"tricky_pdfs/{Path(r['pdf_path']).name}")
+        for r in results
+        if r.get("tricky") or r.get("error")
+    }
+)
+tricky_manifest = "\n".join(
+    f"{Path(r['pdf_path']).name}: p{r['page'] + 1}"
+    + (f"-{r['page_end'] + 1}" if r.get("page_end", r["page"]) > r["page"] else "")
+    + f" :: {', '.join(r.get('notes', [])) or r.get('error', '')}"
+    for r in results
+    if r.get("tricky") or r.get("error")
+)
 
 n_todo = sum(
     1 for r in flagged
@@ -438,7 +489,12 @@ if n_todo:
 
 st.download_button(
     label="⬇️ Download output bundle (.zip)",
-    data=build_zip_bundle(tex_content, st.session_state.get("figures_dir")),
+    data=build_zip_bundle(
+        tex_content,
+        st.session_state.get("figures_dir"),
+        extra_files=tricky_pdf_paths,
+        extra_text_files=[("tricky_pdfs/manifest.txt", tricky_manifest)] if tricky_manifest else None,
+    ),
     file_name="output_bundle.zip",
     mime="application/zip",
     type="primary",

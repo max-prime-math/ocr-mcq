@@ -50,6 +50,24 @@ def _normalise_figure_mode(value) -> str:
     return "auto"
 
 
+def _result_notes(data: dict, pages_used: int, figures: list[dict], page_index: int, next_page_index: int | None) -> list[str]:
+    notes: list[str] = []
+    question = (data.get("question") or "").strip().lower()
+    answer = data.get("correct_answer")
+    solution = (data.get("solution") or "").strip()
+    if "solution on the next page" in question:
+        notes.append("question says solution on next page")
+    if pages_used > 1:
+        notes.append("used multiple pages")
+    if answer is None:
+        notes.append("correct answer not detected")
+    if figures:
+        notes.append(f"kept {len(figures)} figure crop(s)")
+    if next_page_index is not None and answer is None and not solution:
+        notes.append("page may need next-page pairing")
+    return notes
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -208,7 +226,8 @@ def process_page(
 
     wants_figures = figure_mode == "on" or (figure_mode == "auto" and should_extract_figures(data))
 
-    if next_page_index is not None and should_retry_with_next_page(data):
+    used_next_page = next_page_index is not None and should_retry_with_next_page(data)
+    if used_next_page:
         page_images = [render_page_to_image(pdf_path, page_index, dpi=fallback_dpi)]
         page_images.append(render_page_to_image(pdf_path, next_page_index, dpi=fallback_dpi))
         tmp = save_temp_image(page_images[0])
@@ -242,6 +261,8 @@ def process_page(
             Path(tmp).unlink(missing_ok=True)
 
     pages_used = int(data.get("pages_used") or 1)
+    if used_next_page and (data.get("correct_answer") is not None or data.get("solution")):
+        pages_used = max(pages_used, 2)
     figures = materialise_figures(
         data.get("figures", []),
         page_images[:pages_used],
@@ -249,7 +270,8 @@ def process_page(
         f"{source_stem}_p{page_index + 1}",
     )
     question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
-    solution_figures = [fig for fig in figures if fig.get("section") == "solution"]
+    include_solution_figures = bool(cfg.get("include_solution_figures", False))
+    solution_figures = [fig for fig in figures if fig.get("section") == "solution"] if include_solution_figures else []
     question_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section", "question") == "question"]
     solution_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section") == "solution"]
 
@@ -272,6 +294,8 @@ def process_page(
         "confidence": confidence,
         "flagged": flagged,
         "pages_used": pages_used,
+        "tricky": bool(_result_notes(data, pages_used, figures, page_index, next_page_index)),
+        "notes": _result_notes(data, pages_used, figures, page_index, next_page_index),
         "error": None,
     }
 

@@ -85,7 +85,12 @@ Your job:
    Never place a solution-only asset in the question section.
 9. When an answer choice has its own diagram, graph, or table, attach that
    asset to the corresponding choice letter instead of to the overall stem.
-10. Figure bounding boxes must be tight crops of the figure itself. Do not
+10. If image 2 repeats the same question from image 1 but adds a boxed
+    answer or worked solution, treat both images as one question and set
+    pages_used to 2. Do not emit a second separate question.
+11. If image 1 says "solution on the next page" or otherwise indicates that
+    the answer/solution is on image 2, combine them into one question.
+12. Figure bounding boxes must be tight crops of the figure itself. Do not
    return the entire page unless the figure literally occupies nearly the
    entire page. Exclude surrounding question text, answer choices, headers,
    and margins whenever possible.
@@ -395,10 +400,17 @@ def should_retry_with_next_page(result: dict) -> bool:
 
     present = sum(1 for key in ("A", "B", "C", "D", "E") if choices.get(key))
     question = (result.get("question") or "").strip()
+    solution = (result.get("solution") or "").strip()
+    answer = result.get("correct_answer")
+    haystack = " ".join([question, solution]).lower()
 
     if not question:
         return True
     if present < 5:
+        return True
+    if "solution on the next page" in haystack:
+        return True
+    if answer is None and not solution:
         return True
     return False
 
@@ -415,10 +427,6 @@ def should_extract_figures(result: dict) -> bool:
     question = result.get("question")
     if isinstance(question, str):
         texts.append(question)
-
-    solution = result.get("solution")
-    if isinstance(solution, str):
-        texts.append(solution)
 
     choices = result.get("choices") or {}
     if isinstance(choices, dict):

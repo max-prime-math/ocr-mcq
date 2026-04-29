@@ -165,6 +165,50 @@ def _refine_figure_crop(image: Image.Image, box: tuple[int, int, int, int]) -> t
     return new_left, new_top, new_right, new_bottom
 
 
+def _reject_figure_crop(cropped: Image.Image, page_size: tuple[int, int]) -> bool:
+    """
+    Return True when a proposed figure crop is obviously low-value.
+
+    Heuristics:
+    - nearly blank crops
+    - tiny crops
+    - very large crops that are mostly text / whitespace
+    """
+    cw, ch = cropped.size
+    pw, ph = page_size
+    if cw < 40 or ch < 40:
+        return True
+
+    gray = np.array(cropped.convert("L")) if _CV2_AVAILABLE else None
+    if gray is None:
+        return False
+
+    ink = gray < 245
+    ink_ratio = float(ink.mean())
+    if ink_ratio < 0.003:
+        return True
+
+    crop_area = cw * ch
+    page_area = max(1, pw * ph)
+    if crop_area > page_area * 0.2 and ink_ratio < 0.05:
+        return True
+
+    _, thresh = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    small = 0
+    large = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > max(300, crop_area * 0.01):
+            large += 1
+        elif area > 8:
+            small += 1
+
+    if large == 0 and small > 25:
+        return True
+    return False
+
+
 def materialise_figures(
     figures: list[dict],
     page_images: list[Image.Image],
@@ -203,6 +247,9 @@ def materialise_figures(
         bottom = int(h * (y + height))
         left, top, right, bottom = _refine_figure_crop(image, (left, top, right, bottom))
         cropped = image.crop((left, top, right, bottom))
+        if _reject_figure_crop(cropped, image.size):
+            logger.warning("Rejecting low-value figure crop: %s", fig)
+            continue
 
         filename = f"{stem}_fig_{idx}.png"
         path = base_dir / filename
@@ -215,7 +262,13 @@ def materialise_figures(
     return out
 
 
-def build_zip_bundle(tex_content: str, figures_dir: str | None, tex_name: str = "output.tex") -> bytes:
+def build_zip_bundle(
+    tex_content: str,
+    figures_dir: str | None,
+    tex_name: str = "output.tex",
+    extra_files: list[tuple[str, str]] | None = None,
+    extra_text_files: list[tuple[str, str]] | None = None,
+) -> bytes:
     """Return a zip archive containing the TeX file and any extracted figures."""
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -228,6 +281,12 @@ def build_zip_bundle(tex_content: str, figures_dir: str | None, tex_name: str = 
             for path in sorted(base_dir.rglob("*")):
                 if path.is_file():
                     zf.write(path, arcname=str(path.relative_to(base_dir.parent)))
+        for src, arcname in extra_files or []:
+            src_path = Path(src)
+            if src_path.exists() and src_path.is_file():
+                zf.write(src_path, arcname=arcname)
+        for arcname, content in extra_text_files or []:
+            zf.writestr(arcname, content)
     return buffer.getvalue()
 
 

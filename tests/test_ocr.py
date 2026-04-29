@@ -146,6 +146,16 @@ def test_do_not_retry_when_single_page_result_is_complete():
     assert should_retry_with_next_page(result) is False
 
 
+def test_retry_with_next_page_when_solution_is_explicitly_on_next_page():
+    result = {
+        "question": "Which graph is correct? Solution on the next page.",
+        "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        "correct_answer": None,
+        "solution": None,
+    }
+    assert should_retry_with_next_page(result) is True
+
+
 def test_auto_figure_detection_triggers_on_diagram_language():
     result = {
         "question": "Which graph shown below matches the function?",

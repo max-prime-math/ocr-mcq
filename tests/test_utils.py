@@ -1,6 +1,8 @@
 """Tests for utils.py."""
 
+import tempfile
 import sys
+import zipfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -41,3 +43,21 @@ def test_materialise_figures_refines_full_page_box(tmp_path):
 def test_build_zip_bundle_without_figures_dir():
     bundle = build_zip_bundle(r"\documentclass{article}", None)
     assert bundle
+
+
+def test_build_zip_bundle_includes_extra_files_and_manifest(tmp_path):
+    extra = tmp_path / "sample.pdf"
+    extra.write_bytes(b"pdf-bytes")
+    bundle = build_zip_bundle(
+        r"\documentclass{article}",
+        None,
+        extra_files=[(str(extra), "tricky_pdfs/sample.pdf")],
+        extra_text_files=[("tricky_pdfs/manifest.txt", "sample.pdf: reason")],
+    )
+
+    archive = Path(tempfile.mkstemp(suffix=".zip")[1])
+    archive.write_bytes(bundle)
+    with zipfile.ZipFile(archive) as zf:
+        assert "output.tex" in zf.namelist()
+        assert "tricky_pdfs/sample.pdf" in zf.namelist()
+        assert zf.read("tricky_pdfs/manifest.txt").decode("utf-8") == "sample.pdf: reason"
