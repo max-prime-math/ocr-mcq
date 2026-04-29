@@ -88,6 +88,7 @@ with st.sidebar:
     api_key = st.text_input(
         "Anthropic API key",
         type="password",
+        autocomplete="current-password",
         value=os.environ.get("ANTHROPIC_API_KEY", ""),
         help="Starts with sk-ant-. Never saved to disk.",
     )
