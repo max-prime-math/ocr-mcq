@@ -118,10 +118,10 @@ _OUTPUT_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "page": {"type": "integer", "enum": [1, 2]},
-                    "x": {"type": "number", "minimum": 0, "maximum": 1},
-                    "y": {"type": "number", "minimum": 0, "maximum": 1},
-                    "width": {"type": "number", "minimum": 0, "maximum": 1},
-                    "height": {"type": "number", "minimum": 0, "maximum": 1},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "width": {"type": "number"},
+                    "height": {"type": "number"},
                     "caption": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
                     },
