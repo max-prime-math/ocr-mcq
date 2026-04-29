@@ -85,7 +85,7 @@ def test_figures_are_included_in_output():
         question="See the graph.",
         choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
         solution=None,
-        figures=[{"latex_path": "figures/sample.png", "caption": "Graph", "placement": "stem"}],
+        figures=[{"latex_path": "figures/sample.png", "placement": "stem"}],
         solution_figures=[],
         tables=[],
         solution_tables=[],
@@ -143,7 +143,7 @@ def test_question_tables_render_before_choices():
         solution=None,
         figures=[],
         solution_figures=[],
-        tables=[{"latex": r"\begin{tabular}{cc}1 & 2\end{tabular}", "caption": "Data", "placement": "stem"}],
+        tables=[{"latex": r"\begin{tabular}{cc}1 & 2\end{tabular}", "placement": "stem"}],
         solution_tables=[],
     )
     block = render_question(parsed, correct_answer="A")
@@ -157,7 +157,7 @@ def test_solution_figures_do_not_render_in_question_block():
         choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
         solution="See figure.",
         figures=[],
-        solution_figures=[{"latex_path": "figures/solution.png", "caption": "Work", "placement": "stem"}],
+        solution_figures=[{"latex_path": "figures/solution.png", "placement": "stem"}],
         tables=[],
         solution_tables=[],
     )
@@ -172,7 +172,7 @@ def test_choice_specific_figure_renders_under_that_choice():
         question="Pick the matching diagram.",
         choices={"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D", "E": "Option E"},
         solution=None,
-        figures=[{"latex_path": "figures/choice_b.png", "caption": "Choice B diagram", "placement": "B"}],
+        figures=[{"latex_path": "figures/choice_b.png", "placement": "B"}],
         solution_figures=[],
         tables=[],
         solution_tables=[],
@@ -191,7 +191,7 @@ def test_choice_specific_table_renders_under_that_choice():
         solution=None,
         figures=[],
         solution_figures=[],
-        tables=[{"latex": r"\begin{tabular}{c}42\end{tabular}", "caption": "Choice D table", "placement": "D"}],
+        tables=[{"latex": r"\begin{tabular}{c}42\end{tabular}", "placement": "D"}],
         solution_tables=[],
     )
     block = render_question(parsed, correct_answer="A")

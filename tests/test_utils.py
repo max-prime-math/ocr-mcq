@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from utils import materialise_figures
+from utils import build_zip_bundle, materialise_figures
 
 
 def test_materialise_figures_refines_full_page_box(tmp_path):
@@ -22,7 +22,6 @@ def test_materialise_figures_refines_full_page_box(tmp_path):
             "y": 0.0,
             "width": 1.0,
             "height": 1.0,
-            "caption": "Figure",
         }
     ]
 
@@ -37,3 +36,8 @@ def test_materialise_figures_refines_full_page_box(tmp_path):
     assert cropped.size[1] < image.size[1]
     assert cropped.size[0] > 300
     assert cropped.size[1] > 350
+
+
+def test_build_zip_bundle_without_figures_dir():
+    bundle = build_zip_bundle(r"\documentclass{article}", None)
+    assert bundle

@@ -215,13 +215,16 @@ def materialise_figures(
     return out
 
 
-def build_zip_bundle(tex_content: str, figures_dir: str, tex_name: str = "output.tex") -> bytes:
+def build_zip_bundle(tex_content: str, figures_dir: str | None, tex_name: str = "output.tex") -> bytes:
     """Return a zip archive containing the TeX file and any extracted figures."""
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(tex_name, tex_content)
-        base_dir = Path(figures_dir)
-        if base_dir.exists():
+        if figures_dir:
+            base_dir = Path(figures_dir)
+        else:
+            base_dir = None
+        if base_dir is not None and base_dir.exists():
             for path in sorted(base_dir.rglob("*")):
                 if path.is_file():
                     zf.write(path, arcname=str(path.relative_to(base_dir.parent)))

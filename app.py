@@ -42,6 +42,7 @@ for key, default in {
     "results": [],
     "processed": False,
     "tmpdir": None,
+    "figures_dir": None,
     "usage_log": [],
     "model_used": None,
 }.items():
@@ -158,6 +159,7 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
     progress = st.progress(0, text="Starting…")
     status = st.empty()
     figures_dir = os.path.join(tmpdir, "figures")
+    st.session_state.figures_dir = figures_dir
 
     for pdf_path in pdf_paths:
         fname = Path(pdf_path).name
@@ -430,7 +432,7 @@ if n_todo:
 
 st.download_button(
     label="⬇️ Download output bundle (.zip)",
-    data=build_zip_bundle(tex_content, os.path.join(st.session_state.tmpdir, "figures")),
+    data=build_zip_bundle(tex_content, st.session_state.get("figures_dir")),
     file_name="output_bundle.zip",
     mime="application/zip",
     type="primary",

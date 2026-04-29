@@ -52,14 +52,12 @@ class FigureSpec(TypedDict, total=False):
     y: float
     width: float
     height: float
-    caption: str | None
     latex_path: str
 
 
 class TableSpec(TypedDict, total=False):
     section: Literal["question", "solution"]
     placement: Literal["stem", "A", "B", "C", "D", "E"]
-    caption: str | None
     latex: str
 
 

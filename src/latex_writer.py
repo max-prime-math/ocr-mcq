@@ -105,9 +105,6 @@ def _render_figures(lines: list[str], figures: list[dict]) -> None:
         lines.append(r"\begin{center}")
         lines.append(rf"\includegraphics[width=0.65\linewidth]{{{latex_path}}}")
         lines.append(r"\end{center}")
-        caption = fig.get("caption")
-        if caption:
-            lines.append(f"% Figure: {_escape_percent(caption)}")
 
 
 def _render_tables(lines: list[str], tables: list[dict]) -> None:
@@ -116,9 +113,6 @@ def _render_tables(lines: list[str], tables: list[dict]) -> None:
         if not latex:
             continue
         lines.append(latex)
-        caption = table.get("caption")
-        if caption:
-            lines.append(f"% Table: {_escape_percent(caption)}")
 
 
 def _by_placement(items: list[dict], placement: str) -> list[dict]:

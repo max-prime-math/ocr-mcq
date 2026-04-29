@@ -212,11 +212,8 @@ _OUTPUT_SCHEMA_EXTENDED = {
                     "y": {"type": "number"},
                     "width": {"type": "number"},
                     "height": {"type": "number"},
-                    "caption": {
-                        "anyOf": [{"type": "string"}, {"type": "null"}],
-                    },
                 },
-                "required": ["page", "section", "placement", "x", "y", "width", "height", "caption"],
+                "required": ["page", "section", "placement", "x", "y", "width", "height"],
                 "additionalProperties": False,
             },
         },
@@ -228,12 +225,9 @@ _OUTPUT_SCHEMA_EXTENDED = {
                 "properties": {
                     "section": {"type": "string", "enum": ["question", "solution"]},
                     "placement": {"type": "string", "enum": ["stem", "A", "B", "C", "D", "E"]},
-                    "caption": {
-                        "anyOf": [{"type": "string"}, {"type": "null"}],
-                    },
                     "latex": {"type": "string"},
                 },
-                "required": ["section", "placement", "caption", "latex"],
+                "required": ["section", "placement", "latex"],
                 "additionalProperties": False,
             },
         },
