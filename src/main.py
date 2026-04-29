@@ -268,6 +268,8 @@ def process_page(
         page_images[:pages_used],
         figures_dir,
         f"{source_stem}_p{page_index + 1}",
+        pdf_path=pdf_path,
+        page_numbers=[page_index + offset for offset in range(pages_used)],
     )
     question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
     include_solution_figures = bool(cfg.get("include_solution_figures", False))

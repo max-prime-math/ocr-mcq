@@ -159,6 +159,96 @@ def test_question_strips_control_chars_and_repairs_igint_token():
     assert r"\(\int_1^4 \sqrt{1+9x^4}\, dx\)" in block
 
 
+def test_solution_removes_nested_inline_math_inside_dollar_math():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"$x^2 e^x - x^2 - x^3 = \(\frac{x^4}{2\)!} + \(\frac{x^5}{3\)!}$$",
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"$x^2 e^x - x^2 - x^3 = \frac{x^4}{2!} + \frac{x^5}{3!}$" in block
+
+
+def test_solution_dedupes_repeated_inline_math_closers():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"number of barrels = \(\int_0^{24} r(t)\,dt = 3000\)\)",
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"number of barrels = \(\int_0^{24} r(t)\,dt = 3000\)" in block
+
+
+def test_question_wraps_short_inline_equation_in_prose():
+    parsed = ParsedQuestion(
+        question="A particle moves so that its position is given by x(t) = t^2 - 6t + 5. Find when velocity is zero.",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="C")
+    assert r"given by \(x(t) = t^2 - 6t + 5\)." in block
+
+
+def test_choice_repairs_left_right_mixed_with_inline_delimiters():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={
+            "A": r"\left(\(\frac{3x^2}{2} + x\right)^5 + C\)",
+            "B": "2",
+            "C": "3",
+            "D": "4",
+            "E": "5",
+        },
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"\CorrectChoice \(\left(\frac{3x^2}{2} + x\right)^5 + C\)" in block
+
+
+def test_choice_trims_trailing_inline_closer_after_complete_math_block():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": r"\(\left(\frac{3x^2}{2} + x\right)^5 + C\)\)", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"\CorrectChoice \(\left(\frac{3x^2}{2} + x\right)^5 + C\)" in block
+
+
+def test_solution_normalises_triple_dollar_run():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"$x^2 e^x = x^2 + x^3$$$",
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"$x^2 e^x = x^2 + x^3$" in block
+
+
 def test_figures_are_included_in_output():
     parsed = ParsedQuestion(
         question="See the graph.",

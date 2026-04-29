@@ -39,6 +39,13 @@ _RANGE_PATTERN = re.compile(
     r"(?:\s+and\s+(?:-?\d+(?:\.\d+)?)\s*(?:<=|>=|\\leq?|\\geq?)\s*[A-Za-z]\s*(?:<=|>=|\\leq?|\\geq?)\s*(?:-?\d+(?:\.\d+)?))*"
     r")"
 )
+_INLINE_EQUATION_PATTERN = re.compile(
+    r"(?<![A-Za-z\\])("
+    r"(?:[A-Za-z](?:\([A-Za-z0-9,+\-*/^_{}\s]*\))?(?:_[A-Za-z0-9{}]+)?(?:\^[A-Za-z0-9{}]+)?)"
+    r"\s*=\s*"
+    r"[A-Za-z0-9\\{}_^()+\-*/\s]+"
+    r")"
+)
 _COMMAND_MATH_PATTERN = re.compile(
     r"("
     r"\\(?:int|iint|iiint|sum|prod|lim|frac|dfrac|tfrac|sqrt|sin|cos|tan|cot|sec|csc|ln|log|exp|Rightarrow)"
@@ -77,11 +84,78 @@ def _normalise_unicode_math(text: str) -> str:
     for src, dst in _UNICODE_MATH_REPLACEMENTS.items():
         repaired = repaired.replace(src, dst)
     repaired = re.sub(r"(?<![A-Za-z\\])(?:bigint|igint)(?=\s*_)", r"\\int", repaired)
+    repaired = _normalise_mixed_math_delimiters(repaired)
+    return repaired
+
+
+def _normalise_mixed_math_delimiters(text: str) -> str:
+    repaired = text
+    repaired = repaired.replace(r"\left(\(", r"\left(")
+    repaired = repaired.replace(r"\left[\(", r"\left[")
+    repaired = repaired.replace(r"\left\{\(", r"\left\{")
+    repaired = repaired.replace(r"\left(\[", r"\left(")
+    repaired = repaired.replace(r"\left[\[", r"\left[")
+    repaired = repaired.replace(r"\)\right)", r"\right)")
+    repaired = repaired.replace(r"\)\right]", r"\right]")
+    repaired = repaired.replace(r"\)\right\}", r"\right\}")
+    repaired = repaired.replace(r"\]\right)", r"\right)")
+    repaired = repaired.replace(r"\]\right]", r"\right]")
     return repaired
 
 
 def _count_unescaped_dollars(text: str) -> int:
     return len(re.findall(r"(?<!\\)\$", text))
+
+
+def _normalise_dollar_runs(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        count = len(match.group(0))
+        return "$$" if count % 2 == 0 else "$"
+
+    return re.sub(r"(?<!\\)\${2,}", repl, text)
+
+
+def _repair_math_content(text: str) -> str:
+    repaired = text
+    repaired = repaired.replace(r"\(", "")
+    repaired = repaired.replace(r"\)", "")
+    repaired = repaired.replace(r"\[", "")
+    repaired = repaired.replace(r"\]", "")
+    repaired = re.sub(r"\\([()\[\]])", "", repaired)
+    repaired = repaired.replace("$$", "")
+    repaired = re.sub(r"\\([)\]])(?=!)", "", repaired)
+    return repaired
+
+
+def _repair_protected_math(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        block = match.group(0)
+        if block.startswith(r"\(") and block.endswith(r"\)"):
+            return rf"\({_repair_math_content(block[2:-2])}\)"
+        if block.startswith(r"\[") and block.endswith(r"\]"):
+            return rf"\[{_repair_math_content(block[2:-2])}\]"
+        if block.startswith("$$") and block.endswith("$$"):
+            return f"$${_repair_math_content(block[2:-2])}$$"
+        if block.startswith("$") and block.endswith("$"):
+            return f"${_repair_math_content(block[1:-1])}$"
+        return block
+
+    return _PROTECTED_MATH_PATTERN.sub(repl, text)
+
+
+def _dedupe_math_delimiters(text: str) -> str:
+    repaired = text
+    while r"\(\(" in repaired:
+        repaired = repaired.replace(r"\(\(", r"\(")
+    while r"\)\)" in repaired:
+        repaired = repaired.replace(r"\)\)", r"\)")
+    while r"\[\[" in repaired:
+        repaired = repaired.replace(r"\[\[", r"\[")
+    while r"\]\]" in repaired:
+        repaired = repaired.replace(r"\]\]", r"\]")
+    repaired = re.sub(r"(\\\(.+?\\\))\\\)", r"\1", repaired)
+    repaired = re.sub(r"(\\\[.+?\\\])\\\]", r"\1", repaired)
+    return repaired
 
 
 def _wrap_inline_math(match: re.Match[str]) -> str:
@@ -106,6 +180,7 @@ def _wrap_bare_math_spans(text: str) -> str:
         plain = text[last:match.start()]
         plain = _INTERVAL_PATTERN.sub(_wrap_inline_math, plain)
         plain = _RANGE_PATTERN.sub(_wrap_inline_math, plain)
+        plain = _INLINE_EQUATION_PATTERN.sub(_wrap_inline_math, plain)
         plain = _COMMAND_MATH_PATTERN.sub(_wrap_inline_math, plain)
         parts.append(plain)
         parts.append(match.group(0))
@@ -114,6 +189,7 @@ def _wrap_bare_math_spans(text: str) -> str:
     tail = text[last:]
     tail = _INTERVAL_PATTERN.sub(_wrap_inline_math, tail)
     tail = _RANGE_PATTERN.sub(_wrap_inline_math, tail)
+    tail = _INLINE_EQUATION_PATTERN.sub(_wrap_inline_math, tail)
     tail = _COMMAND_MATH_PATTERN.sub(_wrap_inline_math, tail)
     parts.append(tail)
     return "".join(parts)
@@ -176,8 +252,14 @@ def _render_text(text: str) -> str:
         return env_block
 
     cleaned = _normalise_unicode_math(text)
-    cleaned = _wrap_bare_math_spans(cleaned)
+    cleaned = _normalise_dollar_runs(cleaned)
     cleaned = _balance_delimited_math(_escape_percent(cleaned))
+    cleaned = _repair_protected_math(cleaned)
+    cleaned = _wrap_bare_math_spans(cleaned)
+    cleaned = _repair_protected_math(cleaned)
+    cleaned = _normalise_mixed_math_delimiters(cleaned)
+    cleaned = _dedupe_math_delimiters(cleaned)
+    cleaned = _balance_delimited_math(cleaned)
     if _looks_like_bare_math(cleaned):
         return rf"\({cleaned}\)"
     return cleaned

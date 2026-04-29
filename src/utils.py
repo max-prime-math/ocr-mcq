@@ -227,6 +227,49 @@ def _refine_figure_crop(image: Image.Image, box: tuple[int, int, int, int]) -> t
     new_top = top + max(0, y1 - pad_y)
     new_right = left + min(rw, x2 + pad_x)
     new_bottom = top + min(rh, y2 + pad_y)
+
+    # Second pass: trim off dense caption text bands that sit below the
+    # figure with a clear whitespace gap between them.
+    candidate = image.crop((new_left, new_top, new_right, new_bottom))
+    cw, ch = candidate.size
+    if ch >= 120:
+        candidate_np = np.array(candidate.convert("L"))
+        ink = candidate_np < 235
+        row_density = ink.mean(axis=1)
+
+        bands: list[tuple[int, int, float, float]] = []
+        in_band = False
+        start = 0
+        for i, value in enumerate(row_density):
+            if value > 0.01 and not in_band:
+                in_band = True
+                start = i
+            elif value <= 0.01 and in_band:
+                end = i - 1
+                if end - start >= 3:
+                    segment = row_density[start : end + 1]
+                    bands.append((start, end, float(segment.mean()), float(segment.max())))
+                in_band = False
+        if in_band:
+            end = ch - 1
+            if end - start >= 3:
+                segment = row_density[start : end + 1]
+                bands.append((start, end, float(segment.mean()), float(segment.max())))
+
+        if len(bands) >= 2:
+            last_start, last_end, last_mean, last_max = bands[-1]
+            prev_end = bands[-2][1]
+            gap_rows = last_start - prev_end - 1
+            if (
+                last_start >= int(ch * 0.72)
+                and gap_rows >= max(14, int(ch * 0.03))
+                and last_mean >= 0.05
+                and last_max >= 0.15
+            ):
+                trimmed_bottom = new_top + max(0, last_start - 6)
+                if trimmed_bottom - new_top >= int(ch * 0.6):
+                    new_bottom = trimmed_bottom
+
     return new_left, new_top, new_right, new_bottom
 
 
@@ -274,11 +317,134 @@ def _reject_figure_crop(cropped: Image.Image, page_size: tuple[int, int]) -> boo
     return False
 
 
+def _rect_area(rect) -> float:
+    return max(0.0, float(rect.width)) * max(0.0, float(rect.height))
+
+
+def _rect_intersection(a, b) -> float:
+    left = max(float(a.x0), float(b.x0))
+    top = max(float(a.y0), float(b.y0))
+    right = min(float(a.x1), float(b.x1))
+    bottom = min(float(a.y1), float(b.y1))
+    if right <= left or bottom <= top:
+        return 0.0
+    return (right - left) * (bottom - top)
+
+
+def _union_rects(rects: list):
+    x0 = min(float(rect.x0) for rect in rects)
+    y0 = min(float(rect.y0) for rect in rects)
+    x1 = max(float(rect.x1) for rect in rects)
+    y1 = max(float(rect.y1) for rect in rects)
+    return fitz.Rect(x0, y0, x1, y1)
+
+
+def _normalise_pdf_rect(raw_rect, page_rect):
+    rect = fitz.Rect(raw_rect)
+    rect = fitz.Rect(
+        min(rect.x0, rect.x1),
+        min(rect.y0, rect.y1),
+        max(rect.x0, rect.x1),
+        max(rect.y0, rect.y1),
+    )
+    clipped = rect & page_rect
+    if clipped.is_empty or clipped.width <= 1 or clipped.height <= 1:
+        return None
+    return clipped
+
+
+def _pixel_box_to_pdf_rect(box: tuple[int, int, int, int], image_size: tuple[int, int], page_rect):
+    iw, ih = image_size
+    if iw <= 0 or ih <= 0:
+        return None
+    left, top, right, bottom = box
+    sx = page_rect.width / iw
+    sy = page_rect.height / ih
+    rect = fitz.Rect(left * sx, top * sy, right * sx, bottom * sy)
+    return _normalise_pdf_rect(rect, page_rect)
+
+
+def _render_pdf_clip(page, clip_rect, image_size: tuple[int, int]) -> Image.Image | None:
+    iw, ih = image_size
+    if iw <= 0 or ih <= 0:
+        return None
+    sx = iw / page.rect.width
+    sy = ih / page.rect.height
+    pix = page.get_pixmap(matrix=fitz.Matrix(sx, sy), clip=clip_rect, alpha=False)
+    return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+
+def _extract_pdf_figure_crop(
+    pdf_path: str,
+    page_index: int,
+    image_size: tuple[int, int],
+    original_box: tuple[int, int, int, int],
+    refined_box: tuple[int, int, int, int],
+) -> Image.Image | None:
+    """
+    Render a figure directly from PDF page objects when possible.
+
+    The raster-refined box is used only as a hint to choose overlapping PDF
+    image objects. If no suitable object is found, return ``None`` and let the
+    caller fall back to raster cropping.
+    """
+    if not _FITZ_AVAILABLE:
+        return None
+
+    doc = fitz.open(pdf_path)
+    try:
+        if page_index < 0 or page_index >= len(doc):
+            return None
+        page = doc.load_page(page_index)
+        page_rect = page.rect
+        preferred_rect = _pixel_box_to_pdf_rect(refined_box, image_size, page_rect)
+        source_rect = _pixel_box_to_pdf_rect(original_box, image_size, page_rect)
+        if preferred_rect is None or source_rect is None:
+            return None
+
+        blocks = page.get_text("dict").get("blocks", [])
+        image_rects = []
+        min_area = max(64.0, _rect_area(page_rect) * 0.002)
+        for block in blocks:
+            if block.get("type") != 1:
+                continue
+            rect = _normalise_pdf_rect(block.get("bbox"), page_rect)
+            if rect is None or _rect_area(rect) < min_area:
+                continue
+            if _rect_intersection(rect, source_rect) <= 0:
+                continue
+            image_rects.append(rect)
+
+        if not image_rects:
+            return None
+
+        def score(rect) -> tuple[float, float, float]:
+            inter_pref = _rect_intersection(rect, preferred_rect)
+            inter_src = _rect_intersection(rect, source_rect)
+            area = _rect_area(rect)
+            contains_center = 0.0
+            center = fitz.Point((preferred_rect.x0 + preferred_rect.x1) / 2, (preferred_rect.y0 + preferred_rect.y1) / 2)
+            if rect.contains(center):
+                contains_center = 1.0
+            return (
+                inter_pref / max(1.0, _rect_area(preferred_rect)),
+                contains_center,
+                inter_src / max(1.0, area),
+            )
+
+        image_rects.sort(key=score, reverse=True)
+        return _render_pdf_clip(page, image_rects[0], image_size)
+    finally:
+        doc.close()
+
+
 def materialise_figures(
     figures: list[dict],
     page_images: list[Image.Image],
     figures_dir: str,
     stem: str,
+    pdf_path: str | None = None,
+    page_numbers: list[int] | None = None,
 ) -> list[dict]:
     """
     Crop figure boxes from rendered page images and persist them.
@@ -310,8 +476,22 @@ def materialise_figures(
         top = int(h * y)
         right = int(w * (x + width))
         bottom = int(h * (y + height))
-        left, top, right, bottom = _refine_figure_crop(image, (left, top, right, bottom))
-        cropped = image.crop((left, top, right, bottom))
+        original_box = (left, top, right, bottom)
+        refined_box = _refine_figure_crop(image, original_box)
+        raster_cropped = image.crop(refined_box)
+        cropped = None
+        if pdf_path and page_numbers and 0 <= page_no - 1 < len(page_numbers):
+            extracted = _extract_pdf_figure_crop(
+                pdf_path,
+                page_numbers[page_no - 1],
+                image.size,
+                original_box,
+                refined_box,
+            )
+            if extracted is not None and not _reject_figure_crop(extracted, image.size):
+                cropped = extracted
+        if cropped is None:
+            cropped = raster_cropped
         if _reject_figure_crop(cropped, image.size):
             logger.warning("Rejecting low-value figure crop: %s", fig)
             continue

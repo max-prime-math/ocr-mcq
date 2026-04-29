@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import json
+import subprocess
 from pathlib import Path
 
 import streamlit as st
@@ -29,6 +30,29 @@ from utils import (
     render_page_to_image,
     save_temp_image,
 )
+
+APP_CHANNEL = "alpha"
+
+
+def _resolve_app_version() -> str:
+    override = os.environ.get("OCR_MCQ_APP_VERSION", "").strip()
+    if override:
+        return override
+
+    repo_root = Path(__file__).parent
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        sha = "unknown"
+    return f"{APP_CHANNEL} ({sha})"
+
+
+APP_VERSION = _resolve_app_version()
 
 
 def _result_notes(data: dict, pages_used: int, figures: list[dict], next_page_used: bool) -> list[str]:
@@ -146,6 +170,7 @@ def _checkpoint_processing(tmpdir: str, results: list, usage_log: list, model_us
 with st.sidebar:
     st.title("OCR-MCQ")
     st.caption("Multiple-choice PDFs → exam-class LaTeX")
+    st.caption(f"Build: `{APP_VERSION}`")
     st.divider()
 
     api_key = st.text_input(
@@ -183,6 +208,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.title("OCR-MCQ")
+st.caption(f"Build: `{APP_VERSION}`")
 
 uploaded_files = st.file_uploader(
     "Drop PDF files here",
@@ -303,6 +329,8 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                         page_images[:pages_used],
                         figures_dir,
                         f"{Path(fname).stem}_p{page_idx + 1}",
+                        pdf_path=pdf_path,
+                        page_numbers=[page_idx + offset for offset in range(pages_used)],
                     )
                     question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
                     solution_figures = []
