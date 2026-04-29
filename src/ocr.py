@@ -2,8 +2,8 @@
 ocr.py — Claude Vision extraction for multiple-choice exam pages.
 
 Sends one or two page images to Claude and returns the question stem,
-answer choices A–E, any extracted figure locations, and the marked
-correct answer in a single API call.
+answer choices A–E, extracted non-table figure locations, extracted LaTeX
+tables, and the marked correct answer in a single API call.
 
 Requires ANTHROPIC_API_KEY to be set in the environment.
 
@@ -70,11 +70,25 @@ Your job:
    (equations, working, or explanatory text beyond the answer choices),
    extract it as the solution. If there is no solution text, set solution
    to null.
-6. For every meaningful figure that belongs in the question, return a
-   bounding box on the page where the figure appears. Include diagrams,
-   graphs, charts, geometry figures, and tables when they are part of the
-   problem statement. Do not include decorative page furniture or choice
-   bubbles.
+6. For every meaningful non-table figure, return a bounding box on the page
+   where the figure appears. Include diagrams, graphs, charts, and geometry
+   figures when they are part of the problem statement or written solution.
+   Do not include tables as figures. Do not include decorative page
+   furniture or choice bubbles.
+7. Extract any actual tables as LaTeX table/tabular content instead of image
+   crops. Put each table in the tables array with a section label.
+8. Every figure and every table must be labelled with:
+   - section: question or solution
+   - placement:
+     - stem if it belongs to the main question/solution body
+     - A/B/C/D/E if it belongs to a specific answer choice
+   Never place a solution-only asset in the question section.
+9. When an answer choice has its own diagram, graph, or table, attach that
+   asset to the corresponding choice letter instead of to the overall stem.
+10. Figure bounding boxes must be tight crops of the figure itself. Do not
+   return the entire page unless the figure literally occupies nearly the
+   entire page. Exclude surrounding question text, answer choices, headers,
+   and margins whenever possible.
 
 LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
 
@@ -86,6 +100,7 @@ Bounding boxes:
 - x, y, width, and height are normalized to the range [0, 1]
 - x and y are the top-left corner of the figure box
 - boxes should be tight enough to crop the actual figure content
+- do not use a full-page bounding box for a small or medium figure
 
 If there is no second image, pages_used must be 1 and figures may still
 refer only to page 1.\
@@ -135,8 +150,13 @@ _OUTPUT_SCHEMA_SINGLE = {
             "items": {},
             "description": "Always empty in single-page economical mode.",
         },
+        "tables": {
+            "type": "array",
+            "items": {},
+            "description": "Always empty in single-page economical mode.",
+        },
     },
-    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures"],
+    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures", "tables"],
     "additionalProperties": False,
 }
 
@@ -186,6 +206,8 @@ _OUTPUT_SCHEMA_EXTENDED = {
                 "type": "object",
                 "properties": {
                     "page": {"type": "integer", "enum": [1, 2]},
+                    "section": {"type": "string", "enum": ["question", "solution"]},
+                    "placement": {"type": "string", "enum": ["stem", "A", "B", "C", "D", "E"]},
                     "x": {"type": "number"},
                     "y": {"type": "number"},
                     "width": {"type": "number"},
@@ -194,12 +216,29 @@ _OUTPUT_SCHEMA_EXTENDED = {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
                     },
                 },
-                "required": ["page", "x", "y", "width", "height", "caption"],
+                "required": ["page", "section", "placement", "x", "y", "width", "height", "caption"],
+                "additionalProperties": False,
+            },
+        },
+        "tables": {
+            "type": "array",
+            "description": "Tables extracted as LaTeX rather than image crops.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "section": {"type": "string", "enum": ["question", "solution"]},
+                    "placement": {"type": "string", "enum": ["stem", "A", "B", "C", "D", "E"]},
+                    "caption": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                    },
+                    "latex": {"type": "string"},
+                },
+                "required": ["section", "placement", "caption", "latex"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures"],
+    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures", "tables"],
     "additionalProperties": False,
 }
 
@@ -296,7 +335,8 @@ def extract_page(
                         "text": (
                             (
                                 "Extract the question, all five answer choices (A–E), "
-                                "the marked correct answer, and any figure bounding boxes. "
+                                "the marked correct answer, any tight non-table figure bounding boxes, "
+                                "and any tables as LaTeX, each with section and placement labels. "
                                 "If the question continues onto image 2, combine both pages "
                                 "and set pages_used to 2; otherwise set pages_used to 1."
                             )
@@ -304,7 +344,7 @@ def extract_page(
                             else (
                                 "Extract the question, all five answer choices (A–E), "
                                 "the marked correct answer, and any written solution text "
-                                "from this exam page. Set pages_used to 1 and figures to []."
+                                "from this exam page. Set pages_used to 1 and figures/tables to []."
                             )
                         ),
                     },

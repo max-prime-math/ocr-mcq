@@ -39,16 +39,28 @@ class ParsedQuestion(TypedDict):
     choices: dict[str, str]
     solution: str | None
     figures: list["FigureSpec"]
+    solution_figures: list["FigureSpec"]
+    tables: list["TableSpec"]
+    solution_tables: list["TableSpec"]
 
 
 class FigureSpec(TypedDict, total=False):
     page: Literal[1, 2]
+    section: Literal["question", "solution"]
+    placement: Literal["stem", "A", "B", "C", "D", "E"]
     x: float
     y: float
     width: float
     height: float
     caption: str | None
     latex_path: str
+
+
+class TableSpec(TypedDict, total=False):
+    section: Literal["question", "solution"]
+    placement: Literal["stem", "A", "B", "C", "D", "E"]
+    caption: str | None
+    latex: str
 
 
 def _find_choice_spans(text: str) -> list[tuple[int, str]]:
@@ -94,7 +106,15 @@ def parse_question(ocr_text: str) -> ParsedQuestion:
 
     if len(spans) < 2:
         logger.warning("Fewer than 2 choice labels found — treating all text as stem.")
-        return ParsedQuestion(question=ocr_text.strip(), choices={}, solution=None, figures=[])
+        return ParsedQuestion(
+            question=ocr_text.strip(),
+            choices={},
+            solution=None,
+            figures=[],
+            solution_figures=[],
+            tables=[],
+            solution_tables=[],
+        )
 
     # Everything before the first choice label is the question stem.
     stem_end = spans[0][0]
@@ -113,7 +133,15 @@ def parse_question(ocr_text: str) -> ParsedQuestion:
     if missing:
         logger.warning("Missing choice(s): %s", missing)
 
-    return ParsedQuestion(question=question, choices=choices, solution=None, figures=[])
+    return ParsedQuestion(
+        question=question,
+        choices=choices,
+        solution=None,
+        figures=[],
+        solution_figures=[],
+        tables=[],
+        solution_tables=[],
+    )
 
 
 def _label_end(text: str, label_start: int) -> int:

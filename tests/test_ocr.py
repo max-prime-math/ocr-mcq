@@ -22,6 +22,7 @@ def _make_client(answer="B", question="What is 1+1?"):
         "pages_used": 1,
         "solution": None,
         "figures": [],
+        "tables": [],
     }
     block = MagicMock()
     block.type = "text"

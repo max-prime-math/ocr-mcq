@@ -97,6 +97,34 @@ def _render_text(text: str) -> str:
     return cleaned
 
 
+def _render_figures(lines: list[str], figures: list[dict]) -> None:
+    for fig in figures:
+        latex_path = fig.get("latex_path")
+        if not latex_path:
+            continue
+        lines.append(r"\begin{center}")
+        lines.append(rf"\includegraphics[width=0.65\linewidth]{{{latex_path}}}")
+        lines.append(r"\end{center}")
+        caption = fig.get("caption")
+        if caption:
+            lines.append(f"% Figure: {_escape_percent(caption)}")
+
+
+def _render_tables(lines: list[str], tables: list[dict]) -> None:
+    for table in tables:
+        latex = table.get("latex")
+        if not latex:
+            continue
+        lines.append(latex)
+        caption = table.get("caption")
+        if caption:
+            lines.append(f"% Table: {_escape_percent(caption)}")
+
+
+def _by_placement(items: list[dict], placement: str) -> list[dict]:
+    return [item for item in items if item.get("placement", "stem") == placement]
+
+
 def render_question(
     parsed: ParsedQuestion,
     correct_answer: Optional[str],
@@ -119,17 +147,8 @@ def render_question(
     if source:
         lines.append(f"% {source}")
     lines.append(_render_text(parsed["question"]))
-
-    for fig in parsed.get("figures", []):
-        latex_path = fig.get("latex_path")
-        if not latex_path:
-            continue
-        lines.append(r"\begin{center}")
-        lines.append(rf"\includegraphics[width=0.65\linewidth]{{{latex_path}}}")
-        lines.append(r"\end{center}")
-        caption = fig.get("caption")
-        if caption:
-            lines.append(f"% Figure: {_escape_percent(caption)}")
+    _render_tables(lines, _by_placement(parsed.get("tables", []), "stem"))
+    _render_figures(lines, _by_placement(parsed.get("figures", []), "stem"))
     lines.append(r"\begin{choices}")
 
     choices = parsed.get("choices", {})
@@ -141,6 +160,8 @@ def render_question(
             lines.append(rf"\CorrectChoice {_render_text(text)}")
         else:
             lines.append(rf"\choice {_render_text(text)}")
+        _render_tables(lines, _by_placement(parsed.get("tables", []), letter))
+        _render_figures(lines, _by_placement(parsed.get("figures", []), letter))
 
     if not choices:
         lines.append(r"\choice % TODO: choices not parsed")
@@ -151,9 +172,14 @@ def render_question(
     lines.append(r"\end{choices}")
 
     solution = parsed.get("solution")
-    if solution:
+    solution_figures = parsed.get("solution_figures", [])
+    solution_tables = parsed.get("solution_tables", [])
+    if solution or solution_figures or solution_tables:
         lines.append(r"\begin{solution}")
-        lines.append(_render_text(solution))
+        _render_tables(lines, _by_placement(solution_tables, "stem"))
+        _render_figures(lines, _by_placement(solution_figures, "stem"))
+        if solution:
+            lines.append(_render_text(solution))
         lines.append(r"\end{solution}")
 
     return "\n".join(lines)

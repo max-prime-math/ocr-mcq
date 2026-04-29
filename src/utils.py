@@ -25,6 +25,14 @@ except ImportError:
     _FITZ_AVAILABLE = False
     logger.error("PyMuPDF (fitz) not installed — PDF rendering unavailable.")
 
+try:
+    import cv2
+    import numpy as np
+
+    _CV2_AVAILABLE = True
+except ImportError:
+    _CV2_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # PDF → image
@@ -100,6 +108,63 @@ def save_temp_image(image: Image.Image, suffix: str = ".png") -> str:
     return path
 
 
+def _refine_figure_crop(image: Image.Image, box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """
+    Shrink a loose figure box around the dominant non-text content inside it.
+
+    This is mainly a safeguard for model outputs that return a very large box,
+    including the full page. If refinement cannot confidently isolate a
+    smaller region, the original box is returned.
+    """
+    left, top, right, bottom = box
+    region = image.crop(box)
+    rw, rh = region.size
+    if rw < 40 or rh < 40 or not _CV2_AVAILABLE:
+        return box
+
+    region_np = np.array(region.convert("L"))
+    _, thresh = cv2.threshold(region_np, 235, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    min_area = max(200, int(rw * rh * 0.0015))
+    candidates: list[tuple[int, int, int, int]] = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        if w < 20 or h < 20:
+            continue
+        # Ignore long thin contours that are usually text rules/underlines.
+        aspect = w / max(h, 1)
+        if aspect > 18 or aspect < 0.05:
+            continue
+        candidates.append((x, y, w, h))
+
+    if not candidates:
+        return box
+
+    x1 = min(x for x, y, w, h in candidates)
+    y1 = min(y for x, y, w, h in candidates)
+    x2 = max(x + w for x, y, w, h in candidates)
+    y2 = max(y + h for x, y, w, h in candidates)
+
+    refined_area = max(1, (x2 - x1) * (y2 - y1))
+    original_area = max(1, rw * rh)
+
+    # If refinement does not materially shrink the crop, keep the original.
+    if refined_area > original_area * 0.92:
+        return box
+
+    pad_x = max(8, int((x2 - x1) * 0.04))
+    pad_y = max(8, int((y2 - y1) * 0.04))
+    new_left = left + max(0, x1 - pad_x)
+    new_top = top + max(0, y1 - pad_y)
+    new_right = left + min(rw, x2 + pad_x)
+    new_bottom = top + min(rh, y2 + pad_y)
+    return new_left, new_top, new_right, new_bottom
+
+
 def materialise_figures(
     figures: list[dict],
     page_images: list[Image.Image],
@@ -136,6 +201,7 @@ def materialise_figures(
         top = int(h * y)
         right = int(w * (x + width))
         bottom = int(h * (y + height))
+        left, top, right, bottom = _refine_figure_crop(image, (left, top, right, bottom))
         cropped = image.crop((left, top, right, bottom))
 
         filename = f"{stem}_fig_{idx}.png"

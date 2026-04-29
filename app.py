@@ -228,12 +228,19 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                     figures_dir,
                     f"{Path(fname).stem}_p{page_idx + 1}",
                 )
+                question_figures = [fig for fig in figures if fig.get("section", "question") == "question"]
+                solution_figures = [fig for fig in figures if fig.get("section") == "solution"]
+                question_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section", "question") == "question"]
+                solution_tables = [tbl for tbl in data.get("tables", []) if tbl.get("section") == "solution"]
 
                 parsed = ParsedQuestion(
                     question=data.get("question", ""),
                     choices=data.get("choices", {}),
                     solution=data.get("solution"),
-                    figures=figures,
+                    figures=question_figures,
+                    solution_figures=solution_figures,
+                    tables=question_tables,
+                    solution_tables=solution_tables,
                 )
                 answer = data.get("correct_answer")
 
