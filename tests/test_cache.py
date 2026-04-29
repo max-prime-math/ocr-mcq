@@ -53,3 +53,13 @@ def test_different_images_get_different_keys(tmp_path):
     assert cache.get(p1)["text"] == "one"
     assert cache.get(p2)["text"] == "two"
     Path(p1).unlink(); Path(p2).unlink()
+
+
+def test_sequence_of_images_gets_distinct_cache_entry(tmp_path):
+    cache = MathpixCache(str(tmp_path))
+    p1 = _write_tmp(b"image-one")
+    p2 = _write_tmp(b"image-two")
+    cache.put([p1, p2], {"text": "pair"})
+    assert cache.get([p1, p2])["text"] == "pair"
+    assert cache.get(p1) is None
+    Path(p1).unlink(); Path(p2).unlink()

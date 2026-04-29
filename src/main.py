@@ -28,6 +28,7 @@ from utils import (
     get_correction,
     load_config,
     load_corrections,
+    materialise_figures,
     page_count,
     render_page_to_image,
     save_correction,
@@ -155,26 +156,56 @@ def _show_image(path: str) -> None:
 def process_page(
     pdf_path: str,
     page_index: int,
+    next_page_index: int | None,
     cfg: dict,
     cache: VisionCache,
     client: anthropic.Anthropic,
     force_ocr: bool,
+    figures_dir: str,
+    source_stem: str,
 ) -> dict:
     """
-    Render one PDF page and extract question + answer via Claude Vision.
+    Render one PDF page, optionally plus its continuation page, and extract
+    question + answer via Claude Vision.
 
     Returns a dict with keys: parsed, answer, confidence, flagged, error.
     """
     model = cfg.get("model", DEFAULT_MODEL)
 
-    img = render_page_to_image(pdf_path, page_index, dpi=cfg.get("dpi", 300))
-    tmp = save_temp_image(img)
+    page_images = [render_page_to_image(pdf_path, page_index, dpi=cfg.get("dpi", 300))]
+    if next_page_index is not None:
+        page_images.append(render_page_to_image(pdf_path, next_page_index, dpi=cfg.get("dpi", 300)))
+
+    tmp = save_temp_image(page_images[0])
+    tmp2 = save_temp_image(page_images[1]) if len(page_images) > 1 else None
     try:
-        data = extract_page(tmp, client=client, cache=cache, force=force_ocr, model=model)
+        data = extract_page(
+            tmp,
+            client=client,
+            cache=cache,
+            force=force_ocr,
+            model=model,
+            second_image_path=tmp2,
+        )
     finally:
         Path(tmp).unlink(missing_ok=True)
+        if tmp2 is not None:
+            Path(tmp2).unlink(missing_ok=True)
 
-    parsed = ParsedQuestion(question=data["question"], choices=data.get("choices", {}), solution=data.get("solution"))
+    pages_used = int(data.get("pages_used") or 1)
+    figures = materialise_figures(
+        data.get("figures", []),
+        page_images[:pages_used],
+        figures_dir,
+        f"{source_stem}_p{page_index + 1}",
+    )
+
+    parsed = ParsedQuestion(
+        question=data["question"],
+        choices=data.get("choices", {}),
+        solution=data.get("solution"),
+        figures=figures,
+    )
     answer = data.get("correct_answer")  # letter or None
     confidence = 1.0 if answer else 0.0
     flagged = answer is None
@@ -184,6 +215,7 @@ def process_page(
         "answer": answer,
         "confidence": confidence,
         "flagged": flagged,
+        "pages_used": pages_used,
         "error": None,
     }
 
@@ -228,6 +260,7 @@ def main() -> None:
     cache = VisionCache(args.cache)
     corrections = load_corrections(args.corrections)
     combined_path = str(output_dir / "output.tex")
+    figures_dir = str(output_dir / "figures")
 
     total_pages = 0
     successful = 0
@@ -247,20 +280,30 @@ def main() -> None:
 
         page_results = []
 
-        for page_idx in range(n_pages):
-            total_pages += 1
+        page_idx = 0
+        while page_idx < n_pages:
             logger.debug("  Page %d / %d", page_idx + 1, n_pages)
 
             try:
                 result = process_page(
-                    str(pdf_path), page_idx, cfg, cache, client, args.force_ocr
+                    str(pdf_path),
+                    page_idx,
+                    page_idx + 1 if page_idx + 1 < n_pages else None,
+                    cfg,
+                    cache,
+                    client,
+                    args.force_ocr,
+                    figures_dir,
+                    Path(fname).stem,
                 )
             except Exception as exc:
                 logger.error("  Error on page %d of %s: %s", page_idx, fname, exc)
                 error_count += 1
+                total_pages += 1
                 write_review_row(
                     args.review_csv, fname, page_idx, None, 0.0, notes=str(exc)
                 )
+                page_idx += 1
                 continue
 
             # Apply human correction if available.
@@ -283,8 +326,12 @@ def main() -> None:
             else:
                 successful += 1
 
-            source = Path(fname).stem
+            total_pages += max(1, int(result.get("pages_used", 1)))
+            source = f"{Path(fname).stem} p{page_idx + 1}"
+            if result.get("pages_used", 1) > 1:
+                source += f"-{page_idx + result['pages_used']}"
             page_results.append((result["parsed"], result["answer"], source))
+            page_idx += max(1, int(result.get("pages_used", 1)))
 
         if args.combine:
             append_to_combined(page_results, combined_path, fname)

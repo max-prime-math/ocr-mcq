@@ -1,0 +1,102 @@
+You are building a new, standalone Python app for OCR-to-LaTeX processing of FRQ (free-response question) PDFs.
+
+This new FRQ app should be separate from the existing MCQ app. Do not modify or depend on the current codebase as an in-place extension. Instead, use the existing MCQ app only as a reference for workflow and architecture style: PDF ingestion, page rendering, LLM extraction, caching, LaTeX generation, Streamlit UI, and tests.
+
+Before doing anything else, ask me to provide one representative FRQ PDF from the set so you can inspect the exact page structure and confirm assumptions before implementation. Do not skip this step.
+
+The FRQ PDFs have this layout on question pages:
+- The question prompt is at the top of the page.
+- The worked solution is on the left side of the page.
+- The corresponding grading scheme / rubric is on the right side of the page.
+
+The PDFs may also contain extra pages that should be ignored, such as:
+- Title pages
+- Cover sheets
+- Instructions pages
+- Section separators
+- Other non-question pages
+
+Your task is to design and implement a separate FRQ app with a workflow similar to the reference MCQ project, but tailored to FRQ extraction.
+
+Requirements:
+
+1. Build it as a standalone app.
+- Keep the FRQ app separate from the existing MCQ app.
+- Do not assume the FRQ logic should be merged into MCQ modules.
+- Organize the FRQ app as its own small codebase or clearly separated app package.
+
+2. Use a similar workflow and architecture style.
+- Reuse the same high-level ideas where appropriate:
+  - PDF upload/input
+  - per-page rendering
+  - LLM-based extraction
+  - local caching
+  - LaTeX generation
+  - Streamlit interface
+  - automated tests
+- Favor small, composable modules.
+
+3. Make page classification the first step.
+- For each rendered page, first classify whether it is:
+  - a real FRQ page that should be processed, or
+  - an extra / ignorable page that should be skipped.
+- The classifier should handle title pages and similar non-question material.
+- Skipped pages should not appear in the final LaTeX output.
+- The app should still surface which pages were skipped and why, so the user can review the results.
+
+4. Extract structured content from valid FRQ pages.
+- For each non-skipped FRQ page, extract:
+  - question
+  - solution
+  - grading_scheme
+- Preserve mathematical notation in LaTeX form where possible.
+- If any field is missing or unclear, return a structured null or empty value rather than guessing.
+- If a page is ambiguous or confidence is low, flag it for review.
+
+5. Generate FRQ-oriented LaTeX.
+- Do not use MCQ choices formatting.
+- Produce output suitable for free-response questions.
+- The LaTeX should clearly separate:
+  - the question statement
+  - the solution
+  - the grading scheme / rubric
+- Prefer proper LaTeX environments instead of ad hoc markers.
+
+6. Build a Streamlit UI.
+- Allow upload of one or more PDFs.
+- Show progress page by page.
+- Show counts for:
+  - processed FRQ pages
+  - skipped extra pages
+  - flagged pages
+  - errors
+- Let the user review flagged pages before downloading LaTeX.
+- Show enough detail for the user to understand why a page was skipped or flagged.
+
+7. Include caching and usage awareness.
+- Use local caching so repeated runs are cheaper and faster.
+- If the chosen LLM API exposes token usage, track and surface it in the UI where practical.
+
+8. Add tests.
+- Add focused tests for:
+  - page classification / skip behavior
+  - FRQ LaTeX rendering
+  - structured extraction handling
+  - any new helper functions introduced for the FRQ flow
+
+When you begin implementation:
+- First inspect the sample PDF I provide.
+- Summarize the page layout you observe.
+- State the app structure you plan to build.
+- Then implement the code directly.
+
+When designing the page-level extraction prompt for the LLM, make sure it explicitly tells the model to:
+- determine whether the page is a real FRQ page or an ignorable extra page
+- extract the top question text
+- extract the left-column solution
+- extract the right-column grading scheme
+- preserve mathematical notation in LaTeX
+- avoid guessing when content is unclear
+- return structured JSON
+
+Use a pragmatic approach. The goal is a working standalone FRQ OCR-to-LaTeX app that follows the spirit of the reference MCQ workflow without being coupled to that codebase.

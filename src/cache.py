@@ -9,16 +9,25 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
 
-def _image_hash(image_path: str) -> str:
-    """Return a stable SHA-256 hex digest for the file at *image_path*."""
+def _iter_paths(image_path: str | Iterable[str]) -> list[str]:
+    if isinstance(image_path, str):
+        return [image_path]
+    return list(image_path)
+
+
+def _image_hash(image_path: str | Iterable[str]) -> str:
+    """Return a stable SHA-256 hex digest for one image or a sequence of images."""
     h = hashlib.sha256()
-    with open(image_path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
+    for path in _iter_paths(image_path):
+        h.update(b"\0FILE\0")
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
     return h.hexdigest()
 
 
@@ -29,11 +38,11 @@ class MathpixCache:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _cache_path(self, image_path: str) -> Path:
+    def _cache_path(self, image_path: str | Iterable[str]) -> Path:
         key = _image_hash(image_path)
         return self.cache_dir / f"{key}.json"
 
-    def get(self, image_path: str):
+    def get(self, image_path: str | Iterable[str]):
         """Return cached dict if present, else None."""
         path = self._cache_path(image_path)
         if path.exists():
@@ -42,14 +51,14 @@ class MathpixCache:
                 return json.load(fh)
         return None
 
-    def put(self, image_path: str, data: dict) -> None:
+    def put(self, image_path: str | Iterable[str], data: dict) -> None:
         """Persist *data* to the cache."""
         path = self._cache_path(image_path)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
         logger.debug("Cached response → %s", path.name)
 
-    def invalidate(self, image_path: str) -> None:
+    def invalidate(self, image_path: str | Iterable[str]) -> None:
         """Remove cache entry for *image_path* (used with --force-ocr)."""
         path = self._cache_path(image_path)
         if path.exists():

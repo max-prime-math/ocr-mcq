@@ -5,7 +5,7 @@ import sys
 import tempfile
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -19,6 +19,9 @@ def _make_client(answer="B", question="What is 1+1?"):
         "question": question,
         "choices": {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
         "correct_answer": answer,
+        "pages_used": 1,
+        "solution": None,
+        "figures": [],
     }
     block = MagicMock()
     block.type = "text"
@@ -109,3 +112,16 @@ def test_extract_page_null_answer(tmp_path):
         Path(img).unlink(missing_ok=True)
 
     assert result["correct_answer"] is None
+
+
+def test_extract_page_supports_second_image(tmp_path):
+    client, _ = _make_client()
+    img1 = _tmp_png()
+    img2 = _tmp_png()
+    try:
+        result = extract_page(img1, client=client, second_image_path=img2)
+    finally:
+        Path(img1).unlink(missing_ok=True)
+        Path(img2).unlink(missing_ok=True)
+
+    assert result["pages_used"] == 1

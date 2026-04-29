@@ -10,7 +10,7 @@ Supported choice label formats (case-insensitive):
 
 import logging
 import re
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,17 @@ class ParsedQuestion(TypedDict):
     question: str
     choices: dict[str, str]
     solution: str | None
+    figures: list["FigureSpec"]
+
+
+class FigureSpec(TypedDict, total=False):
+    page: Literal[1, 2]
+    x: float
+    y: float
+    width: float
+    height: float
+    caption: str | None
+    latex_path: str
 
 
 def _find_choice_spans(text: str) -> list[tuple[int, str]]:
@@ -83,7 +94,7 @@ def parse_question(ocr_text: str) -> ParsedQuestion:
 
     if len(spans) < 2:
         logger.warning("Fewer than 2 choice labels found — treating all text as stem.")
-        return ParsedQuestion(question=ocr_text.strip(), choices={})
+        return ParsedQuestion(question=ocr_text.strip(), choices={}, solution=None, figures=[])
 
     # Everything before the first choice label is the question stem.
     stem_end = spans[0][0]
@@ -102,7 +113,7 @@ def parse_question(ocr_text: str) -> ParsedQuestion:
     if missing:
         logger.warning("Missing choice(s): %s", missing)
 
-    return ParsedQuestion(question=question, choices=choices, solution=None)
+    return ParsedQuestion(question=question, choices=choices, solution=None, figures=[])
 
 
 def _label_end(text: str, label_start: int) -> int:

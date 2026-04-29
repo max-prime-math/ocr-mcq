@@ -19,7 +19,14 @@ from cache import MathpixCache as VisionCache
 from latex_writer import render_question
 from ocr import extract_page
 from parsing import ParsedQuestion
-from utils import crop_bottom, page_count, render_page_to_image, save_temp_image
+from utils import (
+    build_zip_bundle,
+    crop_bottom,
+    materialise_figures,
+    page_count,
+    render_page_to_image,
+    save_temp_image,
+)
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -144,17 +151,23 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
     pages_done = 0
     progress = st.progress(0, text="Starting…")
     status = st.empty()
+    figures_dir = os.path.join(tmpdir, "figures")
 
     for pdf_path in pdf_paths:
         fname = Path(pdf_path).name
         n = page_count(pdf_path)
+        page_idx = 0
 
-        for page_idx in range(n):
+        while page_idx < n:
             status.text(f"{fname} — page {page_idx + 1} of {n}")
 
             try:
-                img = render_page_to_image(pdf_path, page_idx, dpi=200)
-                tmp_img = save_temp_image(img)
+                page_images = [render_page_to_image(pdf_path, page_idx, dpi=200)]
+                if page_idx + 1 < n:
+                    page_images.append(render_page_to_image(pdf_path, page_idx + 1, dpi=200))
+
+                tmp_img = save_temp_image(page_images[0])
+                tmp_img_2 = save_temp_image(page_images[1]) if len(page_images) > 1 else None
                 try:
                     data = extract_page(
                         tmp_img,
@@ -163,24 +176,38 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                         force=force_ocr,
                         model=model,
                         usage_out=usage_log,
+                        second_image_path=tmp_img_2,
                     )
                 finally:
                     Path(tmp_img).unlink(missing_ok=True)
+                    if tmp_img_2 is not None:
+                        Path(tmp_img_2).unlink(missing_ok=True)
+
+                pages_used = int(data.get("pages_used") or 1)
+                figures = materialise_figures(
+                    data.get("figures", []),
+                    page_images[:pages_used],
+                    figures_dir,
+                    f"{Path(fname).stem}_p{page_idx + 1}",
+                )
 
                 parsed = ParsedQuestion(
                     question=data.get("question", ""),
                     choices=data.get("choices", {}),
                     solution=data.get("solution"),
+                    figures=figures,
                 )
                 answer = data.get("correct_answer")
 
                 all_results.append({
                     "fname": fname,
                     "page": page_idx,
+                    "page_end": page_idx + pages_used - 1,
                     "parsed": parsed,
                     "answer": answer,
                     "flagged": answer is None,
                     "pdf_path": pdf_path,
+                    "pages_used": pages_used,
                     "error": None,
                 })
 
@@ -188,18 +215,22 @@ if st.button("Process PDFs", type="primary", use_container_width=True):
                 all_results.append({
                     "fname": fname,
                     "page": page_idx,
+                    "page_end": page_idx,
                     "parsed": None,
                     "answer": None,
                     "flagged": True,
                     "pdf_path": pdf_path,
+                    "pages_used": 1,
                     "error": str(exc),
                 })
 
-            pages_done += 1
+            pages_used = all_results[-1].get("pages_used", 1)
+            pages_done += pages_used
             progress.progress(
                 pages_done / total_pages,
                 text=f"{pages_done} / {total_pages} pages processed",
             )
+            page_idx += pages_used
 
     progress.empty()
     status.empty()
@@ -254,7 +285,11 @@ elif st.session_state.processed:
 if errors:
     with st.expander("Error details"):
         for r in errors:
-            st.error(f"{r['fname']} page {r['page'] + 1}: {r['error']}")
+            if r.get("page_end", r["page"]) > r["page"]:
+                page_label = f"pages {r['page'] + 1}-{r['page_end'] + 1}"
+            else:
+                page_label = f"page {r['page'] + 1}"
+            st.error(f"{r['fname']} {page_label}: {r['error']}")
 
 # ---------------------------------------------------------------------------
 # Review flagged pages
@@ -270,13 +305,17 @@ if flagged:
     )
 
     for r in flagged:
-        label = f"{r['fname']} — Page {r['page'] + 1}"
+        if r.get("page_end", r["page"]) > r["page"]:
+            label = f"{r['fname']} — Pages {r['page'] + 1}-{r['page_end'] + 1}"
+        else:
+            label = f"{r['fname']} — Page {r['page'] + 1}"
         with st.expander(label, expanded=True):
             img_col, form_col = st.columns([1, 1])
 
             with img_col:
                 try:
-                    img = render_page_to_image(r["pdf_path"], r["page"], dpi=150)
+                    review_page = r.get("page_end", r["page"])
+                    img = render_page_to_image(r["pdf_path"], review_page, dpi=150)
                     bottom = crop_bottom(img, 0.5)
                     st.image(bottom, caption="Answer area", use_container_width=True)
                 except Exception:
@@ -311,7 +350,8 @@ st.subheader("Download")
 def build_tex(results: list, corrections: dict) -> str:
     preamble = (
         "\\documentclass[12pt,addpoints]{exam}\n"
-        "\\usepackage{amsmath,amssymb,amsfonts}\n\n"
+        "\\usepackage{amsmath,amssymb,amsfonts}\n"
+        "\\usepackage{graphicx}\n\n"
         "\\begin{document}\n"
         "\\begin{questions}\n"
     )
@@ -323,7 +363,9 @@ def build_tex(results: list, corrections: dict) -> str:
             continue
         key = f"{r['fname']}:{r['page']}"
         answer = corrections.get(key, r["answer"])
-        source = Path(r["fname"]).stem
+        source = f"{Path(r['fname']).stem} p{r['page'] + 1}"
+        if r.get("page_end", r["page"]) > r["page"]:
+            source += f"-{r['page_end'] + 1}"
         blocks.append(render_question(r["parsed"], answer, source))
 
     return preamble + "\n\n".join(blocks) + postamble
@@ -342,10 +384,10 @@ if n_todo:
     )
 
 st.download_button(
-    label="⬇️ Download output.tex",
-    data=tex_content,
-    file_name="output.tex",
-    mime="text/plain",
+    label="⬇️ Download output bundle (.zip)",
+    data=build_zip_bundle(tex_content, os.path.join(st.session_state.tmpdir, "figures")),
+    file_name="output_bundle.zip",
+    mime="application/zip",
     type="primary",
     use_container_width=True,
 )

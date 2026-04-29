@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _PREAMBLE = r"""\documentclass[12pt,addpoints]{exam}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{enumitem}
+\usepackage{graphicx}
 
 \begin{document}
 \begin{questions}
@@ -32,6 +33,37 @@ def _escape_percent(text: str) -> str:
     """Escape bare % characters that aren't already LaTeX comments."""
     import re
     return re.sub(r"(?<!\\)%", r"\\%", text)
+
+
+def _looks_like_bare_math(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if any(token in stripped for token in (r"\(", r"\[", "$$", "$")):
+        return False
+    if len(stripped.split()) > 4 and not any(ch in stripped for ch in "=+-*/^_[]{}()\\"):
+        return False
+
+    import re
+    if re.fullmatch(r"[A-Za-z0-9\\\^_{}\[\]()+\-*/=<>|.,'` :]+", stripped) is None:
+        return False
+
+    return any(
+        (
+            re.search(r"[=^_]", stripped),
+            re.search(r"[A-Za-z]\(", stripped),
+            re.search(r"\\[A-Za-z]+", stripped),
+            re.search(r"\[[^\]]+\]", stripped),
+            re.search(r"\d", stripped) and re.search(r"[A-Za-z]", stripped),
+        )
+    )
+
+
+def _render_text(text: str) -> str:
+    cleaned = _escape_percent(text)
+    if _looks_like_bare_math(cleaned):
+        return rf"\({cleaned}\)"
+    return cleaned
 
 
 def render_question(
@@ -55,7 +87,18 @@ def render_question(
     lines.append(r"\question")
     if source:
         lines.append(f"% {source}")
-    lines.append(parsed["question"])
+    lines.append(_render_text(parsed["question"]))
+
+    for fig in parsed.get("figures", []):
+        latex_path = fig.get("latex_path")
+        if not latex_path:
+            continue
+        lines.append(r"\begin{center}")
+        lines.append(rf"\includegraphics[width=0.65\linewidth]{{{latex_path}}}")
+        lines.append(r"\end{center}")
+        caption = fig.get("caption")
+        if caption:
+            lines.append(f"% Figure: {_escape_percent(caption)}")
     lines.append(r"\begin{choices}")
 
     choices = parsed.get("choices", {})
@@ -64,9 +107,9 @@ def render_question(
         if text is None:
             continue
         if correct_answer and letter == correct_answer.upper():
-            lines.append(rf"\CorrectChoice {text}")
+            lines.append(rf"\CorrectChoice {_render_text(text)}")
         else:
-            lines.append(rf"\choice {text}")
+            lines.append(rf"\choice {_render_text(text)}")
 
     if not choices:
         lines.append(r"\choice % TODO: choices not parsed")
@@ -79,7 +122,7 @@ def render_question(
     solution = parsed.get("solution")
     if solution:
         lines.append(r"\begin{solution}")
-        lines.append(solution)
+        lines.append(_render_text(solution))
         lines.append(r"\end{solution}")
 
     return "\n".join(lines)

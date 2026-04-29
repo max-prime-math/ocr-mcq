@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import tempfile
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -96,6 +98,68 @@ def save_temp_image(image: Image.Image, suffix: str = ".png") -> str:
     os.close(fd)
     image.save(path, format="PNG")
     return path
+
+
+def materialise_figures(
+    figures: list[dict],
+    page_images: list[Image.Image],
+    figures_dir: str,
+    stem: str,
+) -> list[dict]:
+    """
+    Crop figure boxes from rendered page images and persist them.
+
+    Returns a new list of figure dicts including ``latex_path``.
+    """
+    out: list[dict] = []
+    base_dir = Path(figures_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, fig in enumerate(figures, start=1):
+        page_no = int(fig.get("page", 1))
+        if page_no < 1 or page_no > len(page_images):
+            logger.warning("Skipping figure with invalid page reference: %s", fig)
+            continue
+
+        image = page_images[page_no - 1]
+        w, h = image.size
+        x = max(0.0, min(1.0, float(fig.get("x", 0.0))))
+        y = max(0.0, min(1.0, float(fig.get("y", 0.0))))
+        width = max(0.0, min(1.0 - x, float(fig.get("width", 0.0))))
+        height = max(0.0, min(1.0 - y, float(fig.get("height", 0.0))))
+
+        if width <= 0 or height <= 0:
+            logger.warning("Skipping zero-sized figure crop: %s", fig)
+            continue
+
+        left = int(w * x)
+        top = int(h * y)
+        right = int(w * (x + width))
+        bottom = int(h * (y + height))
+        cropped = image.crop((left, top, right, bottom))
+
+        filename = f"{stem}_fig_{idx}.png"
+        path = base_dir / filename
+        cropped.save(path, format="PNG")
+
+        saved = dict(fig)
+        saved["latex_path"] = f"figures/{filename}"
+        out.append(saved)
+
+    return out
+
+
+def build_zip_bundle(tex_content: str, figures_dir: str, tex_name: str = "output.tex") -> bytes:
+    """Return a zip archive containing the TeX file and any extracted figures."""
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(tex_name, tex_content)
+        base_dir = Path(figures_dir)
+        if base_dir.exists():
+            for path in sorted(base_dir.rglob("*")):
+                if path.is_file():
+                    zf.write(path, arcname=str(path.relative_to(base_dir.parent)))
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------

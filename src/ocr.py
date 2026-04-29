@@ -1,8 +1,9 @@
 """
 ocr.py — Claude Vision extraction for multiple-choice exam pages.
 
-Sends a full-page image to Claude and returns the question stem, answer
-choices A–E, and the marked correct answer in a single API call.
+Sends one or two page images to Claude and returns the question stem,
+answer choices A–E, any extracted figure locations, and the marked
+correct answer in a single API call.
 
 Requires ANTHROPIC_API_KEY to be set in the environment.
 
@@ -28,24 +29,47 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are processing scanned multiple-choice exam pages. Each page contains
-exactly one question with answer choices labelled A through E. One choice
-has a visible mark — a filled bubble, circled letter, checkmark, tick, or
-similar — indicating the correct answer. Some pages also include a written
-solution or explanation below the answer choices.
+You are processing scanned multiple-choice exam pages. The input will
+contain either:
+- one page image, or
+- two consecutive page images from the same PDF.
+
+Usually there is one question per page, but sometimes a large question
+continues onto the next page and the answer choices / marked answer appear
+on the second page.
+
+Some questions also contain diagrams, graphs, tables, or other figures that
+must be preserved in the final LaTeX output.
 
 Your job:
-1. Extract the full question stem (preserve all LaTeX math exactly).
-2. Extract the text of each answer choice A–E (preserve LaTeX math).
-3. Identify which choice is marked as correct.
-4. If there is a written solution or explanation on the page (equations,
-   working, or explanatory text beyond the answer choices), extract it as
-   the solution. If there is no solution text, set solution to null.
+1. Determine whether the question is fully contained on the first image or
+   whether it continues onto the second image. Set pages_used to 1 or 2.
+2. Extract the full question stem across the used pages (preserve LaTeX math).
+3. Extract the text of each answer choice A–E (preserve LaTeX math).
+4. Identify which choice is marked as correct.
+5. If there is a written solution or explanation on the used page(s)
+   (equations, working, or explanatory text beyond the answer choices),
+   extract it as the solution. If there is no solution text, set solution
+   to null.
+6. For every meaningful figure that belongs in the question, return a
+   bounding box on the page where the figure appears. Include diagrams,
+   graphs, charts, geometry figures, and tables when they are part of the
+   problem statement. Do not include decorative page furniture or choice
+   bubbles.
 
 LaTeX conventions: inline math as \\(...\\), display math as \\[...\\].
 
 If the correct-answer mark is absent, ambiguous, or not legible, set
-correct_answer to null — never guess silently.\
+correct_answer to null — never guess silently.
+
+Bounding boxes:
+- page is 1 for the first image, 2 for the second image
+- x, y, width, and height are normalized to the range [0, 1]
+- x and y are the top-left corner of the figure box
+- boxes should be tight enough to crop the actual figure content
+
+If there is no second image, pages_used must be 1 and figures may still
+refer only to page 1.\
 """
 
 _OUTPUT_SCHEMA = {
@@ -75,6 +99,11 @@ _OUTPUT_SCHEMA = {
                 {"type": "null"},
             ],
         },
+        "pages_used": {
+            "type": "integer",
+            "enum": [1, 2],
+            "description": "Whether the question uses only the first page image or spans both page images.",
+        },
         "solution": {
             "description": "Written solution or explanation if present on the page, or null.",
             "anyOf": [
@@ -82,8 +111,27 @@ _OUTPUT_SCHEMA = {
                 {"type": "null"},
             ],
         },
+        "figures": {
+            "type": "array",
+            "description": "Figures that should be cropped from the page image(s) and included in the LaTeX output.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "page": {"type": "integer", "enum": [1, 2]},
+                    "x": {"type": "number", "minimum": 0, "maximum": 1},
+                    "y": {"type": "number", "minimum": 0, "maximum": 1},
+                    "width": {"type": "number", "minimum": 0, "maximum": 1},
+                    "height": {"type": "number", "minimum": 0, "maximum": 1},
+                    "caption": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                    },
+                },
+                "required": ["page", "x", "y", "width", "height", "caption"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["question", "choices", "correct_answer", "solution"],
+    "required": ["question", "choices", "correct_answer", "pages_used", "solution", "figures"],
     "additionalProperties": False,
 }
 
@@ -99,6 +147,7 @@ def extract_page(
     force: bool = False,
     model: str = "claude-haiku-4-5",
     usage_out: Optional[list] = None,
+    second_image_path: Optional[str] = None,
 ) -> dict:
     """
     Extract question data from a full-page exam image.
@@ -109,27 +158,52 @@ def extract_page(
         correct_answer (str | None)      — letter, or None if unclear
 
     Args:
-        image_path: Path to a PNG of the full page.
+        image_path: Path to a PNG of the first page.
         client:     Anthropic client instance.
         cache:      Optional VisionCache; skipped when None.
         force:      Bypass cache and call the API even if cached.
         model:      Claude model ID to use.
         usage_out:  Optional list; a usage dict is appended for each live
                     API call (cache hits are not counted — no tokens used).
+        second_image_path:
+                    Optional path to the next page when a question may span
+                    two pages.
     """
+    image_paths = [image_path]
+    if second_image_path is not None:
+        image_paths.append(second_image_path)
+
     if cache is not None:
         if force:
-            cache.invalidate(image_path)
+            cache.invalidate(image_paths)
         else:
-            cached = cache.get(image_path)
+            cached = cache.get(image_paths)
             if cached is not None:
-                logger.debug("Cache hit for %s", image_path)
+                logger.debug("Cache hit for %s", image_paths)
                 return cached
 
-    with open(image_path, "rb") as fh:
-        image_b64 = base64.standard_b64encode(fh.read()).decode("ascii")
+    content_blocks = []
+    for idx, path in enumerate(image_paths, start=1):
+        with open(path, "rb") as fh:
+            image_b64 = base64.standard_b64encode(fh.read()).decode("ascii")
+        content_blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": image_b64,
+                },
+            }
+        )
+        content_blocks.append(
+            {
+                "type": "text",
+                "text": f"Image {idx} of {len(image_paths)}.",
+            }
+        )
 
-    logger.debug("Calling Claude Vision (%s) for %s", model, image_path)
+    logger.debug("Calling Claude Vision (%s) for %s", model, image_paths)
 
     response = client.messages.create(
         model=model,
@@ -145,20 +219,15 @@ def extract_page(
         messages=[
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_b64,
-                        },
-                    },
+                "content": content_blocks
+                + [
                     {
                         "type": "text",
                         "text": (
                             "Extract the question, all five answer choices (A–E), "
-                            "and the marked correct answer from this exam page."
+                            "the marked correct answer, and any figure bounding boxes. "
+                            "If the question continues onto image 2, combine both pages "
+                            "and set pages_used to 2; otherwise set pages_used to 1."
                         ),
                     },
                 ],
@@ -194,6 +263,6 @@ def extract_page(
         usage_out.append(usage)
 
     if cache is not None:
-        cache.put(image_path, result)
+        cache.put(image_paths, result)
 
     return result

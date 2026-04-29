@@ -12,7 +12,7 @@ from parsing import ParsedQuestion
 
 def _make_parsed(q: str = "What is 1+1?", include_all=True) -> ParsedQuestion:
     choices = {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"} if include_all else {}
-    return ParsedQuestion(question=q, choices=choices)
+    return ParsedQuestion(question=q, choices=choices, solution=None, figures=[])
 
 
 def test_correct_choice_marker():
@@ -46,6 +46,35 @@ def test_write_tex_file_creates_valid_latex(tmp_path):
 
 
 def test_empty_choices_falls_back_gracefully():
-    parsed = ParsedQuestion(question="Stem", choices={})
+    parsed = ParsedQuestion(question="Stem", choices={}, solution=None, figures=[])
     block = render_question(parsed, correct_answer="A")
     assert "% TODO: choices not parsed" in block
+
+
+def test_choice_math_is_wrapped_when_not_in_math_mode():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={
+            "A": "f''(g(x))[g'(x)]^2 + f'(g(x))g''(x)",
+            "B": "undefined",
+            "C": "0",
+            "D": "1",
+            "E": "2",
+        },
+        solution=None,
+        figures=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"\CorrectChoice \(f''(g(x))[g'(x)]^2 + f'(g(x))g''(x)\)" in block
+    assert r"\choice undefined" in block
+
+
+def test_figures_are_included_in_output():
+    parsed = ParsedQuestion(
+        question="See the graph.",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=None,
+        figures=[{"latex_path": "figures/sample.png", "caption": "Graph"}],
+    )
+    block = render_question(parsed, correct_answer="B")
+    assert r"\includegraphics[width=0.65\linewidth]{figures/sample.png}" in block
