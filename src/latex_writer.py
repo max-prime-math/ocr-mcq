@@ -6,6 +6,7 @@ that compile directly with the ``exam`` document class.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -31,8 +32,38 @@ _POSTAMBLE = r"""
 
 def _escape_percent(text: str) -> str:
     """Escape bare % characters that aren't already LaTeX comments."""
-    import re
     return re.sub(r"(?<!\\)%", r"\\%", text)
+
+
+def _count_unescaped_dollars(text: str) -> int:
+    return len(re.findall(r"(?<!\\)\$", text))
+
+
+def _balance_delimited_math(text: str) -> str:
+    """
+    Repair common OCR delimiter mistakes by appending missing closing tokens.
+
+    This is intentionally conservative: it does not try to rewrite nested
+    math, only ensures that unmatched opening delimiters do not break the
+    whole document.
+    """
+    repaired = text
+
+    paren_open = repaired.count(r"\(")
+    paren_close = repaired.count(r"\)")
+    if paren_open > paren_close:
+        repaired += r"\)" * (paren_open - paren_close)
+
+    bracket_open = repaired.count(r"\[")
+    bracket_close = repaired.count(r"\]")
+    if bracket_open > bracket_close:
+        repaired += r"\]" * (bracket_open - bracket_close)
+
+    dollar_count = _count_unescaped_dollars(repaired)
+    if dollar_count % 2 == 1:
+        repaired += "$"
+
+    return repaired
 
 
 def _looks_like_bare_math(text: str) -> bool:
@@ -60,7 +91,7 @@ def _looks_like_bare_math(text: str) -> bool:
 
 
 def _render_text(text: str) -> str:
-    cleaned = _escape_percent(text)
+    cleaned = _balance_delimited_math(_escape_percent(text))
     if _looks_like_bare_math(cleaned):
         return rf"\({cleaned}\)"
     return cleaned

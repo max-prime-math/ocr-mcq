@@ -78,3 +78,36 @@ def test_figures_are_included_in_output():
     )
     block = render_question(parsed, correct_answer="B")
     assert r"\includegraphics[width=0.65\linewidth]{figures/sample.png}" in block
+
+
+def test_solution_closes_unmatched_inline_math():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"Differentiate \(x^2 + 1",
+        figures=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"Differentiate \(x^2 + 1\)" in block
+
+
+def test_solution_closes_unmatched_display_math():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"Compute \[x^2 + 1",
+        figures=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"Compute \[x^2 + 1\]" in block
+
+
+def test_solution_closes_odd_dollar_math():
+    parsed = ParsedQuestion(
+        question="Stem",
+        choices={"A": "1", "B": "2", "C": "3", "D": "4", "E": "5"},
+        solution=r"The slope is $m = 2x + 1",
+        figures=[],
+    )
+    block = render_question(parsed, correct_answer="A")
+    assert r"The slope is $m = 2x + 1$" in block
